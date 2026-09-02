@@ -221,7 +221,7 @@ create policy "publications: правит HR" on public.vacancy_publications
 -- ---------------------------------------------------------------------------
 -- 4. КАНДИДАТЫ
 -- ---------------------------------------------------------------------------
--- База педагогов целиком доступна только HR и владельцу. Руководитель
+-- База кандидатов целиком доступна только HR и владельцу. Руководитель
 -- подразделения видит человека, только если тот откликнулся на его вакансию:
 -- «руководитель подразделения не видит ни базы, ни аналитики».
 create policy "candidates: HR и владелец видят всю базу" on public.candidates
@@ -241,15 +241,15 @@ create policy "candidates: кандидат правит себя" on public.can
 create policy "candidates: HR правит базу" on public.candidates
   for all using (public.is_hr()) with check (public.is_hr());
 
-create policy "teacher_profiles: как кандидат" on public.teacher_profiles
+create policy "candidate_profiles: как кандидат" on public.candidate_profiles
   for select using (
     public.is_hr() or public.is_director()
     or candidate_id = public.my_candidate_id()
     or exists (select 1 from public.applications a
-               where a.candidate_id = teacher_profiles.candidate_id
+               where a.candidate_id = candidate_profiles.candidate_id
                  and public.can_see_vacancy(a.vacancy_id))
   );
-create policy "teacher_profiles: правят HR и сам кандидат" on public.teacher_profiles
+create policy "candidate_profiles: правят HR и сам кандидат" on public.candidate_profiles
   for all using (public.is_hr() or candidate_id = public.my_candidate_id())
   with check (public.is_hr() or candidate_id = public.my_candidate_id());
 
@@ -471,22 +471,22 @@ create policy "разборы заданий: правит HR и оценщик"
   for all using (public.is_hr() or reviewer_id = auth.uid())
   with check (public.is_staff());
 
-create policy "демо-уроки: команда найма" on public.demo_lessons
+create policy "практические проверки: команда найма" on public.practical_checks
   for select using (
     exists (select 1 from public.interviews i
             where i.id = interview_id and public.can_see_application(i.application_id))
   );
-create policy "демо-уроки: правят HR и методист" on public.demo_lessons
-  for all using (public.is_hr() or methodist_id = auth.uid())
+create policy "практические проверки: правят HR и проверяющий" on public.practical_checks
+  for all using (public.is_hr() or reviewer_id = auth.uid())
   with check (public.is_staff());
 
-create policy "оценки демо: команда найма" on public.demo_lesson_scores
+create policy "оценки проверки: команда найма" on public.practical_check_scores
   for select using (
-    exists (select 1 from public.demo_lessons d
+    exists (select 1 from public.practical_checks d
             join public.interviews i on i.id = d.interview_id
-            where d.id = demo_lesson_id and public.can_see_application(i.application_id))
+            where d.id = practical_check_id and public.can_see_application(i.application_id))
   );
-create policy "оценки демо: ставит свой оценщик" on public.demo_lesson_scores
+create policy "оценки проверки: ставит свой оценщик" on public.practical_check_scores
   for all using (reviewer_id = auth.uid()) with check (reviewer_id = auth.uid() and public.is_staff());
 
 -- ---------------------------------------------------------------------------
@@ -655,9 +655,9 @@ create policy "рефералы: заводит сам рекомендател�
 create policy "рефералы: статус ведёт HR" on public.referrals
   for update using (public.is_hr());
 
-create policy "подмены: staff и готовые к подмене кандидаты" on public.substitution_offers
+create policy "срочные замены: staff и готовые к подмене кандидаты" on public.urgent_needs
   for select using (public.is_staff() or public.my_candidate_id() is not null);
-create policy "подмены: правит HR" on public.substitution_offers
+create policy "срочные замены: правит HR" on public.urgent_needs
   for all using (public.is_hr()) with check (public.is_hr());
 
 create policy "сообщество: HR и сам участник" on public.community_members

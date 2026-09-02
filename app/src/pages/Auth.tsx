@@ -57,7 +57,7 @@ export default function Auth() {
       <header className="mb-8">
         <div className="font-display text-[22px] font-bold tracking-[-0.015em]">Растим</div>
         <p className="mt-2 max-w-[52ch] text-[15px] text-ink-2">
-          Платформа найма педагогов. Срок закрытия вакансии и отсев на
+          Платформа найма. Срок закрытия вакансии и отсев на
           испытательном — два числа, которыми меряется её работа.
         </p>
       </header>

@@ -1,7 +1,7 @@
 -- ============================================================================
 -- РАСТИМ · Миграция 03. ОБЩЕНИЕ, СРОКИ, ОЦЕНКА
 -- Телеграм-переписка, SLA и эскалация, антиспам, календарь и самозапись,
--- тесты и кейсы, интервью с ИИ-саммари, демо-урок, оффер.
+-- тесты и кейсы, интервью с ИИ-саммари, практическая проверка, оффер.
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -11,7 +11,7 @@ create type public.channel_kind as enum ('telegram','email','phone','whatsapp','
 create type public.message_direction as enum ('inbound','outbound');
 create type public.author_kind  as enum ('candidate','staff','ai_assistant','system');
 
-create type public.interview_kind as enum ('screening_call','interview','tech_interview','demo_lesson','final');
+create type public.interview_kind as enum ('screening_call','interview','tech_interview','practical_check','final');
 create type public.interview_status as enum ('scheduled','confirmed','done','no_show','cancelled','rescheduled');
 
 create type public.assessment_kind as enum ('test','case','values_test','profiling','video_intro','audio_intro','text_intro');
@@ -25,20 +25,12 @@ create type public.sla_state   as enum ('running','met','breached','escalated','
 create type public.consent_kind as enum (
   'pd_processing',      -- обработка персональных данных
   'call_recording',     -- запись созвона (фишка 61) — без неё разбор встреч незаконен
-  'third_party_share',  -- витрина для партнёрских школ (ДЗ 1, сценарий 7)
+  'third_party_share',  -- витрина для партнёров (ДЗ 1, сценарий 7)
   'marketing'           -- сообщество и рассылки
 );
 
-create type public.document_kind as enum (
-  'criminal_record',    -- справка об отсутствии судимости
-  'medical_book',       -- медкнижка
-  'diploma',            -- диплом
-  'qualification',      -- категория, курсы
-  'passport',
-  'snils',
-  'inn',
-  'other'
-);
+-- document_kind объявлен в миграции 01: на него ссылаются и вакансии
+-- (required_documents), и таблица документов ниже.
 create type public.document_state as enum ('missing','pending','valid','expiring','expired','rejected');
 
 -- ---------------------------------------------------------------------------
@@ -147,7 +139,7 @@ create table public.interview_slots (
   kind          public.interview_kind not null default 'interview',
   starts_at     timestamptz not null,
   ends_at       timestamptz not null,
-  work_format   public.work_format not null default 'online',
+  work_format   public.work_format not null default 'remote',
   location      text,
   is_booked     boolean not null default false,
   booked_by_application_id uuid references public.applications(id) on delete set null,
@@ -164,7 +156,7 @@ create table public.interviews (
   status         public.interview_status not null default 'scheduled',
   scheduled_at   timestamptz not null,
   duration_min   int not null default 45,
-  work_format    public.work_format not null default 'online',
+  work_format    public.work_format not null default 'remote',
   location       text,
   meeting_url    text,
 
@@ -227,8 +219,8 @@ create table public.assessment_templates (
   description   text,
   duration_min  int not null default 10,
   questions     jsonb not null default '[]'::jsonb,
-  -- Кейсы на работу с детьми и родителями (фишка 53):
-  -- конфликт с родителем, срыв урока, отставание ребёнка
+  -- Поведенческие кейсы (фишка 53): разбор инцидента, конфликт
+  -- в команде, срыв срока, недовольный клиент
   value_ids     uuid[] not null default '{}',   -- какие ценности проверяет
   criterion_hint text,
   is_active     boolean not null default true,
@@ -269,25 +261,29 @@ create table public.assessment_reviews (
   created_at     timestamptz not null default now()
 );
 
--- Демо-урок как этап отбора (фишка 51). Нет ни у одного конкурента.
-create table public.demo_lessons (
+-- Практическая проверка как этап отбора (фишка 51).
+-- Кандидат делает настоящую рабочую задачу, а не рассказывает о себе.
+create table public.practical_checks (
   id             uuid primary key default gen_random_uuid(),
   interview_id   uuid unique not null references public.interviews(id) on delete cascade,
-  topic          text,
-  grade          text,
-  audience       text,          -- реальные дети, коллеги, запись
+  task           text,          -- «разобрать инцидент», «звонок клиенту»
+  context        text,          -- что за ситуация и почему она настоящая
+  audience       text,          -- кто наблюдал: команда, клиент, запись
   recording_url  text,
-  methodist_id   uuid references public.profiles(id) on delete set null,
-  methodist_verdict text,
-  methodist_comment text,
+  reviewer_id    uuid references public.profiles(id) on delete set null,
+  verdict        text,
+  comment        text,
   created_at     timestamptz not null default now()
 );
 
-create table public.demo_lesson_scores (
+-- Аспекты одинаковы для всех ролей: они про то, как человек работает.
+-- Предметную часть закрывают критерии вакансии. Без общего листа
+-- проверки не сравнимы между собой.
+create table public.practical_check_scores (
   id            uuid primary key default gen_random_uuid(),
-  demo_lesson_id uuid not null references public.demo_lessons(id) on delete cascade,
+  practical_check_id uuid not null references public.practical_checks(id) on delete cascade,
   reviewer_id   uuid not null references public.profiles(id) on delete cascade,
-  aspect        text not null,   -- контакт с классом, структура, объяснение, дисциплина
+  aspect        text not null,
   result        public.criterion_result not null default 'unknown',
   comment       text,
   created_at    timestamptz not null default now()
@@ -342,7 +338,7 @@ create table public.contracts (
 
 -- ---------------------------------------------------------------------------
 -- 6. СОГЛАСИЯ И ДОКУМЕНТЫ
---    Ниша: без справок педагога просто не допустят к детям (фишка 50).
+--    Какие документы обязательны — задаётся в вакансии (фишка 50).
 -- ---------------------------------------------------------------------------
 create table public.consents (
   id            uuid primary key default gen_random_uuid(),
@@ -494,8 +490,8 @@ alter table public.interview_questions   enable row level security;
 alter table public.assessment_templates  enable row level security;
 alter table public.assessments           enable row level security;
 alter table public.assessment_reviews    enable row level security;
-alter table public.demo_lessons          enable row level security;
-alter table public.demo_lesson_scores    enable row level security;
+alter table public.practical_checks      enable row level security;
+alter table public.practical_check_scores enable row level security;
 alter table public.offer_templates       enable row level security;
 alter table public.offers                enable row level security;
 alter table public.contracts             enable row level security;

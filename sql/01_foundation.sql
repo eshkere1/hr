@@ -1,5 +1,5 @@
 -- ============================================================================
--- РАСТИМ · платформа найма педагогов
+-- РАСТИМ · платформа найма
 -- Миграция 01. ФУНДАМЕНТ: расширения, роли, оргструктура, профили,
 --              функции доступа, аудит, настройки компании.
 -- PostgreSQL 15+ (Supabase / Lovable Cloud)
@@ -40,6 +40,17 @@ comment on type public.app_role is
 -- чтобы не заводить по колонке на каждый тип объекта.
 create type public.entity_kind as enum (
   'vacancy','application','candidate','offer','interview','assessment','employee','document'
+);
+
+-- Уровень позиции. Заменяет отраслевые «ступени»: подходит любой роли.
+create type public.grade_level as enum ('intern','junior','middle','senior','lead');
+
+-- Документы для оформления. Первые четыре нужны почти везде, остальные —
+-- отраслевые. Какие обязательны, решает вакансия (vacancies.required_documents),
+-- а не зашитый в код список: у разработчика, бухгалтера и водителя он разный.
+create type public.document_kind as enum (
+  'passport','snils','inn','work_book','diploma','qualification',
+  'medical_certificate','background_check','military_id','other'
 );
 
 -- ---------------------------------------------------------------------------

@@ -167,12 +167,12 @@ alter table public.applications
   foreign key (referral_id) references public.referrals(id) on delete set null;
 
 -- ---------------------------------------------------------------------------
--- 6. СООБЩЕСТВО И ПОДМЕНЫ (ДЗ 1, сценарии 3 и 5)
+-- 6. СРОЧНЫЕ ЗАМЕНЫ И СООБЩЕСТВО (ДЗ 1, сценарии 3 и 5)
 -- ---------------------------------------------------------------------------
-create table public.substitution_offers (
+create table public.urgent_needs (
   id           uuid primary key default gen_random_uuid(),
   department_id uuid references public.departments(id) on delete set null,
-  subject      text,
+  role         text,
   needed_on    date not null,
   hours        numeric(5,1),
   rate         numeric(12,2),
@@ -211,8 +211,8 @@ create index idx_costs_vacancy on public.hiring_costs (vacancy_id);
 -- вычисляется конкретный человек.
 create table public.salary_benchmarks (
   id           uuid primary key default gen_random_uuid(),
-  subject      text not null,
-  education_stage public.education_stage,
+  specialization text not null,
+  grade           public.grade_level,
   city         text,
   period_month date not null,
   sample_size  int not null,
@@ -323,8 +323,9 @@ select
   c.id as candidate_id,
   c.full_name,
   c.city,
-  tp.subjects,
-  tp.education_stages,
+  tp.specialization,
+  tp.skills,
+  tp.grades,
   a.archive_segment,
   a.reactivate_after,
   a.criteria_met,
@@ -332,7 +333,7 @@ select
   max(a.applied_at) over (partition by c.id) as last_application_at,
   c.is_blacklisted
 from public.candidates c
-left join public.teacher_profiles tp on tp.candidate_id = c.id
+left join public.candidate_profiles tp on tp.candidate_id = c.id
 left join public.applications a on a.candidate_id = c.id
 where a.archive_segment is not null and a.archive_segment <> 'stop_list';
 
@@ -349,7 +350,7 @@ alter table public.idp_items           enable row level security;
 alter table public.probation_reviews   enable row level security;
 alter table public.hiring_satisfaction enable row level security;
 alter table public.referrals           enable row level security;
-alter table public.substitution_offers enable row level security;
+alter table public.urgent_needs       enable row level security;
 alter table public.community_members   enable row level security;
 alter table public.hiring_costs        enable row level security;
 alter table public.salary_benchmarks   enable row level security;

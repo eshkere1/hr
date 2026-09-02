@@ -16,6 +16,13 @@ import WaitingForMe from "@/pages/WaitingForMe";
 import Requisitions, { RequisitionNew } from "@/pages/Requisitions";
 import MyStatus, { MyDocuments } from "@/pages/CandidatePortal";
 import { Admin, Analytics, MyProfile, NotFound } from "@/pages/Misc";
+import Compare from "@/pages/Compare";
+import Archive from "@/pages/Archive";
+import Offers from "@/pages/Offers";
+import Calendar from "@/pages/Calendar";
+import Settings from "@/pages/Settings";
+import Today from "@/pages/Today";
+import People from "@/pages/People";
 
 /**
  * Защита маршрута.
@@ -69,6 +76,22 @@ export default function App() {
           element={
             <RoleGate roles={["director", "superuser"]}>
               <Dashboard />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/today"
+          element={
+            <RoleGate roles={["hr_manager", "superuser"]}>
+              <Today />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/people"
+          element={
+            <RoleGate roles={["hr_manager", "director", "superuser"]}>
+              <People />
             </RoleGate>
           }
         />
@@ -153,6 +176,46 @@ export default function App() {
           element={
             <RoleGate roles={["hr_manager", "director", "superuser"]}>
               <Documents />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/compare"
+          element={
+            <RoleGate roles={["hr_manager", "dept_head", "line_manager", "director", "superuser"]}>
+              <Compare />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/archive"
+          element={
+            <RoleGate roles={["hr_manager", "superuser"]}>
+              <Archive />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/offers"
+          element={
+            <RoleGate roles={["hr_manager", "director", "superuser"]}>
+              <Offers />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/calendar"
+          element={
+            <RoleGate roles={["hr_manager", "dept_head", "line_manager", "superuser"]}>
+              <Calendar />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <RoleGate roles={["hr_manager", "director", "superuser"]}>
+              <Settings />
             </RoleGate>
           }
         />

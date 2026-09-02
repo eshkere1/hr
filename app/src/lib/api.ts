@@ -11,11 +11,16 @@
  */
 import { db, isDemoMode } from "./supabase";
 import * as demo from "./demoData";
+import { matchFromArchive, searchCandidates } from "./matching";
+import { generateQuestions } from "./matching";
+import { DOCUMENT_LABEL } from "./types";
 import type {
-  AppRole, Application, Assessment, Candidate, CandidateDocument,
-  Conversation, CriteriaResult, DashboardStats, FunnelRow, Interview,
-  Message, Note, PipelineStage, Profile, RejectionReason, Requisition,
-  SlaBreach, TeamOpinion, Vacancy, VacancyCriterion,
+  AppRole, Application, ArchiveMatch, Assessment, Candidate, CandidateDocument,
+  CompanyValue, Consent, Conversation, CriteriaResult, CriterionResult,
+  DashboardStats, DocumentKind, FunnelRow, Interview, InterviewSlot, Message,
+  Note, Offer, OfferStatus, PipelineStage, PracticalCheck, Profile, Referral,
+  RejectionReason, Requisition, SalaryGap, SlaBreach, TeamOpinion, UrgentNeed, Vacancy,
+  VacancyApproval, VacancyCriterion, VacancyVersion, WorkFormat,
 } from "./types";
 
 // ===========================================================================
@@ -152,7 +157,7 @@ export async function listVacancies(): Promise<Vacancy[]> {
     .from("vacancies")
     .select(`
       id, title, pipeline_id, department_id, status, priority, headcount, hired_count,
-      subject, grades, city, weekly_hours, description, first_month_reality,
+      specialization, grade, city, required_documents, weekly_hours, description, first_month_reality,
       target_close_date, opened_at, closed_at, hiring_manager_id, recruiter_id,
       departments!vacancies_department_id_fkey ( name ),
       hm:profiles!vacancies_hiring_manager_id_fkey ( full_name ),
@@ -188,7 +193,8 @@ function mapVacancy(row: any): Vacancy {
     recruiter_id: row.recruiter_id, recruiter_name: row.rec?.full_name ?? null,
     status: row.status, priority: row.priority,
     headcount: row.headcount, hired_count: row.hired_count,
-    subject: row.subject, grades: row.grades, city: row.city,
+    specialization: row.specialization, grade: row.grade, city: row.city,
+    required_documents: row.required_documents ?? [],
     weekly_hours: row.weekly_hours, description: row.description,
     first_month_reality: row.first_month_reality,
     target_close_date: row.target_close_date,
@@ -212,7 +218,7 @@ export async function listCriteria(vacancyId: string): Promise<VacancyCriterion[
 // ===========================================================================
 
 /** Локальная копия: в демо-режиме перемещения по доске должны сохраняться. */
-let demoApplications: Application[] = [...demo.applications];
+let demoApplications: Application[] = [...demo.applications, ...demo.archivedApplications];
 
 export async function listApplications(vacancyId?: string): Promise<Application[]> {
   if (isDemoMode) {
@@ -224,8 +230,8 @@ export async function listApplications(vacancyId?: string): Promise<Application[
       id, candidate_id, vacancy_id, stage_id, status, source, applied_at,
       stage_entered_at, sla_due_at, criteria_met, criteria_total,
       archive_segment, rejection_reason_id, is_private,
-      candidates ( full_name, teacher_profiles ( subjects ) ),
-      vacancies ( title, grades )
+      candidates ( full_name, candidate_profiles ( specialization, skills ) ),
+      vacancies ( title )
     `);
   if (vacancyId) q = q.eq("vacancy_id", vacancyId);
   const { data, error } = await q.order("applied_at", { ascending: false });
@@ -234,8 +240,9 @@ export async function listApplications(vacancyId?: string): Promise<Application[
 }
 
 function mapApplication(row: any): Application {
-  const subject = row.candidates?.teacher_profiles?.subjects?.[0];
-  const grades = row.vacancies?.grades;
+  const p = row.candidates?.candidate_profiles;
+  const specialization = p?.specialization;
+  const skills = (p?.skills ?? []).slice(0, 2).join(", ");
   return {
     id: row.id, candidate_id: row.candidate_id,
     candidate_name: row.candidates?.full_name ?? "—",
@@ -247,7 +254,7 @@ function mapApplication(row: any): Application {
     archive_segment: row.archive_segment,
     rejection_reason_id: row.rejection_reason_id,
     is_private: row.is_private, expected_salary: null,
-    subtitle: [subject, grades].filter(Boolean).join(" · ") || null,
+    subtitle: [specialization, skills].filter(Boolean).join(" · ") || null,
   };
 }
 
@@ -351,30 +358,20 @@ export async function confirmCriterion(resultId: string, by: string): Promise<vo
 // ===========================================================================
 
 export async function listCandidates(query = ""): Promise<Candidate[]> {
-  if (isDemoMode) {
-    const q = query.trim().toLowerCase();
-    if (!q) return demo.candidates;
-    return demo.candidates.filter((c) => {
-      const hay = [
-        c.full_name, c.city ?? "",
-        ...(c.teacher?.subjects ?? []),
-        c.resume_text ?? "",
-      ].join(" ").toLowerCase();
-      return q.split(/\s+/).every((word) => hay.includes(word));
-    });
-  }
+  if (isDemoMode) return searchCandidates(demo.candidates, query);
   let q = db().from("candidates").select(`
       id, full_name, phones, emails, city, telegram_username, primary_source,
       is_blacklisted, blacklist_reason, hide_from_current_employer, current_employer,
       consent_pd_granted, last_activity_at, resume_text,
-      teacher_profiles ( candidate_id, subjects, education_stages, years_with_children,
-                         total_experience_years, available_hours_per_week,
-                         schedule_note, ready_for_substitution )
+      candidate_profiles ( candidate_id, specialization, skills, grades,
+                           years_in_specialty, total_experience_years, available_from,
+                           schedule_note, ready_for_urgent_start, work_formats,
+                           expected_salary )
     `);
   if (query.trim()) q = q.ilike("full_name", `%${query.trim()}%`);
   const { data, error } = await q.limit(200);
   if (error) throw error;
-  return (data ?? []).map((c: any) => ({ ...c, teacher: c.teacher_profiles ?? null })) as Candidate[];
+  return (data ?? []).map((c: any) => ({ ...c, profile: c.candidate_profiles ?? null })) as Candidate[];
 }
 
 export async function getCandidate(id: string): Promise<Candidate | null> {
@@ -463,15 +460,20 @@ export async function sendMessage(
  * Антиспам (фишка 41). В базе это функция can_touch_candidate; в демо-режиме
  * считаем по тем же правилам, чтобы поведение экрана совпадало.
  */
+const demoTouches: { candidateId: string; at: number }[] = [];
+
 export async function canTouchCandidate(candidateId: string): Promise<boolean> {
   if (isDemoMode) {
     const cv = demo.conversations.filter((c) => c.candidate_id === candidateId).map((c) => c.id);
     const weekAgo = Date.now() - 7 * 86_400_000;
-    const touches = demoMessages.filter(
+    const written = demoMessages.filter(
       (m) => cv.includes(m.conversation_id) && m.direction === "outbound" &&
              new Date(m.sent_at).getTime() > weekAgo,
     ).length;
-    return touches < 3;
+    const called = demoTouches.filter(
+      (t) => t.candidateId === candidateId && t.at > weekAgo,
+    ).length;
+    return written + called < 3;
   }
   const { data, error } = await db().rpc("can_touch_candidate", { _candidate_id: candidateId });
   if (error) throw error;
@@ -716,4 +718,847 @@ export async function getWaitingForMe(userId: string): Promise<Application[]> {
   return apps
     .filter((a) => a.status === "active")
     .sort((a, b) => (a.sla_due_at ?? "").localeCompare(b.sla_due_at ?? ""));
+}
+
+// ===========================================================================
+// КАЛЕНДАРЬ И САМОЗАПИСЬ (фишка 34)
+// Поиск слотов в переписке — крупнейший пожиратель времени HR.
+// ===========================================================================
+
+let demoSlots: InterviewSlot[] = [...demo.slots];
+
+export async function listSlots(vacancyId?: string): Promise<InterviewSlot[]> {
+  if (isDemoMode) {
+    return demoSlots
+      .filter((s) => !vacancyId || s.vacancy_id === vacancyId || s.vacancy_id === null)
+      .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+  }
+  let q = db().from("interview_slots").select(
+    "id, owner_id, vacancy_id, kind, starts_at, ends_at, work_format, location, is_booked, booked_by_application_id, profiles ( full_name )",
+  );
+  if (vacancyId) q = q.eq("vacancy_id", vacancyId);
+  const { data, error } = await q.order("starts_at");
+  if (error) throw error;
+  return (data ?? []).map((s: any) => ({ ...s, owner_name: s.profiles?.full_name ?? "—" }));
+}
+
+/** Кандидат сам выбирает слот — переписка «когда вам удобно» исчезает. */
+export async function bookSlot(slotId: string, applicationId: string): Promise<void> {
+  if (isDemoMode) {
+    demoSlots = demoSlots.map((s) =>
+      s.id === slotId ? { ...s, is_booked: true, booked_by_application_id: applicationId } : s,
+    );
+    return;
+  }
+  const { error } = await db()
+    .from("interview_slots")
+    .update({ is_booked: true, booked_by_application_id: applicationId })
+    .eq("id", slotId)
+    .eq("is_booked", false);
+  if (error) throw error;
+}
+
+export async function releaseSlot(slotId: string): Promise<void> {
+  if (isDemoMode) {
+    demoSlots = demoSlots.map((s) =>
+      s.id === slotId ? { ...s, is_booked: false, booked_by_application_id: null } : s,
+    );
+    return;
+  }
+  const { error } = await db()
+    .from("interview_slots")
+    .update({ is_booked: false, booked_by_application_id: null })
+    .eq("id", slotId);
+  if (error) throw error;
+}
+
+export async function createSlot(input: {
+  owner_id: string;
+  owner_name: string;
+  vacancy_id: string | null;
+  kind: string;
+  starts_at: string;
+  duration_min: number;
+  work_format: WorkFormat;
+  location: string | null;
+}): Promise<void> {
+  const ends = new Date(
+    new Date(input.starts_at).getTime() + input.duration_min * 60000,
+  ).toISOString();
+
+  if (isDemoMode) {
+    demoSlots = [
+      ...demoSlots,
+      {
+        id: `sl-${Date.now()}`,
+        owner_id: input.owner_id,
+        owner_name: input.owner_name,
+        vacancy_id: input.vacancy_id,
+        kind: input.kind,
+        starts_at: input.starts_at,
+        ends_at: ends,
+        work_format: input.work_format,
+        location: input.location,
+        is_booked: false,
+        booked_by_application_id: null,
+      },
+    ];
+    return;
+  }
+  const { error } = await db().from("interview_slots").insert({
+    owner_id: input.owner_id,
+    vacancy_id: input.vacancy_id,
+    kind: input.kind,
+    starts_at: input.starts_at,
+    ends_at: ends,
+    work_format: input.work_format,
+    location: input.location,
+  });
+  if (error) throw error;
+}
+
+// ===========================================================================
+// ОФФЕР (фишка 39). Самый дорогой шаг воронки — нельзя терять его в почте.
+// ===========================================================================
+
+let demoOffers: Offer[] = [...demo.offers];
+
+export async function listOffers(): Promise<Offer[]> {
+  if (isDemoMode) return demoOffers;
+  const { data, error } = await db()
+    .from("offers")
+    .select(`
+      id, application_id, status, salary, is_net, weekly_hours, start_date,
+      probation_months, body_md, approved_at, sent_at, respond_by, responded_at,
+      applications ( candidates ( full_name ), vacancies ( title ) ),
+      creator:profiles!offers_created_by_fkey ( full_name ),
+      approver:profiles!offers_approved_by_fkey ( full_name )
+    `)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((o: any) => ({
+    ...o,
+    candidate_name: o.applications?.candidates?.full_name ?? "—",
+    vacancy_title: o.applications?.vacancies?.title ?? "—",
+    created_by_name: o.creator?.full_name ?? null,
+    approved_by_name: o.approver?.full_name ?? null,
+  }));
+}
+
+export async function getOfferForApplication(applicationId: string): Promise<Offer | null> {
+  const all = await listOffers();
+  return all.find((o) => o.application_id === applicationId) ?? null;
+}
+
+export async function createOffer(input: {
+  application_id: string;
+  candidate_name: string;
+  vacancy_title: string;
+  salary: number;
+  weekly_hours: number | null;
+  start_date: string;
+  probation_months: number;
+  body_md: string;
+  respond_by: string;
+  created_by_name: string;
+}): Promise<string> {
+  if (isDemoMode) {
+    const id = `of-${Date.now()}`;
+    demoOffers = [
+      {
+        id,
+        application_id: input.application_id,
+        candidate_name: input.candidate_name,
+        vacancy_title: input.vacancy_title,
+        status: "pending_approval",
+        salary: input.salary,
+        is_net: true,
+        weekly_hours: input.weekly_hours,
+        start_date: input.start_date,
+        probation_months: input.probation_months,
+        body_md: input.body_md,
+        created_by_name: input.created_by_name,
+        approved_by_name: null,
+        approved_at: null,
+        sent_at: null,
+        respond_by: input.respond_by,
+        responded_at: null,
+      },
+      ...demoOffers,
+    ];
+    return id;
+  }
+  const { data: sess } = await db().auth.getUser();
+  const { data, error } = await db()
+    .from("offers")
+    .insert({
+      application_id: input.application_id,
+      status: "pending_approval",
+      salary: input.salary,
+      weekly_hours: input.weekly_hours,
+      start_date: input.start_date,
+      probation_months: input.probation_months,
+      body_md: input.body_md,
+      respond_by: input.respond_by,
+      created_by: sess.user?.id,
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
+export async function setOfferStatus(
+  offerId: string,
+  status: OfferStatus,
+  actorName: string,
+): Promise<void> {
+  if (isDemoMode) {
+    demoOffers = demoOffers.map((o) =>
+      o.id === offerId
+        ? {
+            ...o,
+            status,
+            approved_by_name: status === "approved" ? actorName : o.approved_by_name,
+            approved_at: status === "approved" ? new Date().toISOString() : o.approved_at,
+            sent_at: status === "sent" ? new Date().toISOString() : o.sent_at,
+            responded_at: ["accepted", "declined"].includes(status)
+              ? new Date().toISOString()
+              : o.responded_at,
+          }
+        : o,
+    );
+    return;
+  }
+  const patch: Record<string, unknown> = { status };
+  if (status === "approved") patch.approved_at = new Date().toISOString();
+  if (status === "sent") patch.sent_at = new Date().toISOString();
+  if (status === "accepted" || status === "declined")
+    patch.responded_at = new Date().toISOString();
+  const { error } = await db().from("offers").update(patch).eq("id", offerId);
+  if (error) throw error;
+}
+
+// ===========================================================================
+// СОГЛАСОВАНИЕ И ВЕРСИИ ВАКАНСИИ (фишки 26, 27)
+// ===========================================================================
+
+let demoApprovals: VacancyApproval[] = [...demo.vacancyApprovals];
+
+export async function listApprovals(vacancyId?: string): Promise<VacancyApproval[]> {
+  if (isDemoMode) {
+    return demoApprovals.filter((a) => !vacancyId || a.vacancy_id === vacancyId);
+  }
+  let q = db()
+    .from("vacancy_approvals")
+    .select("id, vacancy_id, decision, comment, decided_at, created_at, profiles ( full_name )");
+  if (vacancyId) q = q.eq("vacancy_id", vacancyId);
+  const { data, error } = await q.order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((a: any) => ({ ...a, approver_name: a.profiles?.full_name ?? "—" }));
+}
+
+export async function decideApproval(
+  approvalId: string,
+  decision: "approved" | "rejected",
+  comment: string,
+): Promise<void> {
+  if (isDemoMode) {
+    demoApprovals = demoApprovals.map((a) =>
+      a.id === approvalId
+        ? { ...a, decision, comment: comment || null, decided_at: new Date().toISOString() }
+        : a,
+    );
+    return;
+  }
+  const { error } = await db()
+    .from("vacancy_approvals")
+    .update({ decision, comment, decided_at: new Date().toISOString() })
+    .eq("id", approvalId);
+  if (error) throw error;
+}
+
+export async function listVersions(vacancyId: string): Promise<VacancyVersion[]> {
+  if (isDemoMode) {
+    return demo.vacancyVersions
+      .filter((v) => v.vacancy_id === vacancyId)
+      .sort((a, b) => b.version_no - a.version_no);
+  }
+  const { data, error } = await db()
+    .from("vacancy_versions")
+    .select("id, vacancy_id, version_no, snapshot, change_note, created_at, profiles ( full_name )")
+    .eq("vacancy_id", vacancyId)
+    .order("version_no", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((v: any) => ({
+    id: v.id,
+    vacancy_id: v.vacancy_id,
+    version_no: v.version_no,
+    changed_by_name: v.profiles?.full_name ?? "—",
+    change_note: v.change_note,
+    created_at: v.created_at,
+    changes: (v.snapshot?.changes ?? []) as VacancyVersion["changes"],
+  }));
+}
+
+// ===========================================================================
+// ЦЕННОСТИ (топливо фишки 24) И ВОПРОСЫ ПОД РОЛЬ (фишка 28)
+// ===========================================================================
+
+let demoValues: CompanyValue[] = [...demo.companyValues];
+
+export async function listValues(): Promise<CompanyValue[]> {
+  if (isDemoMode) return demoValues;
+  const { data, error } = await db()
+    .from("company_values")
+    .select("id, code, name, description, good_example, bad_example, is_active")
+    .order("order_index");
+  if (error) throw error;
+  return data as CompanyValue[];
+}
+
+export async function saveValue(value: CompanyValue): Promise<void> {
+  if (isDemoMode) {
+    demoValues = demoValues.map((v) => (v.id === value.id ? value : v));
+    return;
+  }
+  const { error } = await db()
+    .from("company_values")
+    .update({
+      name: value.name,
+      description: value.description,
+      good_example: value.good_example,
+      bad_example: value.bad_example,
+      is_active: value.is_active,
+    })
+    .eq("id", value.id);
+  if (error) throw error;
+}
+
+/**
+ * Вопросы под конкретную роль. Строятся из критериев вакансии, поэтому
+ * интервью проверяет ровно то, по чему потом принимается решение.
+ */
+export async function listQuestions(vacancyId: string) {
+  const criteria = await listCriteria(vacancyId);
+  return generateQuestions(vacancyId, criteria);
+}
+
+// ===========================================================================
+// ДЕМО-УРОК (фишка 51)
+// ===========================================================================
+
+let checksState: PracticalCheck[] = [...demo.practicalChecks];
+
+export async function listPracticalChecks(applicationId?: string): Promise<PracticalCheck[]> {
+  if (isDemoMode) {
+    return checksState.filter((d) => !applicationId || d.application_id === applicationId);
+  }
+  const { data, error } = await db().from("practical_checks").select(`
+    id, interview_id, task, context, audience, verdict, comment,
+    interviews ( application_id, scheduled_at, applications ( candidates ( full_name ) ) ),
+    profiles ( full_name ),
+    practical_check_scores ( id, aspect, result, comment, profiles ( full_name ) )
+  `);
+  if (error) throw error;
+  return (data ?? [])
+    .map((d: any) => ({
+      id: d.id,
+      interview_id: d.interview_id,
+      application_id: d.interviews?.application_id ?? "",
+      candidate_name: d.interviews?.applications?.candidates?.full_name ?? "—",
+      task: d.task,
+      context: d.context,
+      audience: d.audience,
+      reviewer_name: d.profiles?.full_name ?? null,
+      verdict: d.verdict,
+      comment: d.comment,
+      scheduled_at: d.interviews?.scheduled_at ?? "",
+      scores: (d.practical_check_scores ?? []).map((s: any) => ({
+        id: s.id,
+        aspect: s.aspect,
+        result: s.result,
+        comment: s.comment,
+        reviewer_name: s.profiles?.full_name ?? "—",
+      })),
+    }))
+    .filter((d: PracticalCheck) => !applicationId || d.application_id === applicationId);
+}
+
+export async function saveCheckScores(
+  checkId: string,
+  scores: { aspect: string; result: CriterionResult; comment: string }[],
+  reviewerName: string,
+  verdict: string,
+  reviewerComment: string,
+): Promise<void> {
+  if (isDemoMode) {
+    checksState = checksState.map((d) =>
+      d.id === checkId
+        ? {
+            ...d,
+            verdict,
+            comment: reviewerComment || null,
+            reviewer_name: reviewerName,
+            scores: scores.map((s, i) => ({
+              id: `${checkId}-s${i}`,
+              aspect: s.aspect,
+              result: s.result,
+              comment: s.comment || null,
+              reviewer_name: reviewerName,
+            })),
+          }
+        : d,
+    );
+    return;
+  }
+  const { data: sess } = await db().auth.getUser();
+  await db()
+    .from("practical_checks")
+    .update({ verdict, comment: reviewerComment, reviewer_id: sess.user?.id })
+    .eq("id", checkId);
+  await db().from("practical_check_scores").delete().eq("practical_check_id", checkId);
+  const { error } = await db()
+    .from("practical_check_scores")
+    .insert(
+      scores.map((s) => ({
+        practical_check_id: checkId,
+        reviewer_id: sess.user?.id,
+        aspect: s.aspect,
+        result: s.result,
+        comment: s.comment,
+      })),
+    );
+  if (error) throw error;
+}
+
+// ===========================================================================
+// СОГЛАСИЯ И ПРАВО НА ЗАБВЕНИЕ (фишки 61, 62)
+// ===========================================================================
+
+let demoConsents: Consent[] = [...demo.consents];
+
+export async function listConsents(candidateId?: string): Promise<Consent[]> {
+  if (isDemoMode) {
+    return demoConsents
+      .filter((c) => !candidateId || c.candidate_id === candidateId)
+      .sort((a, b) => (b.granted_at ?? "").localeCompare(a.granted_at ?? ""));
+  }
+  let q = db()
+    .from("consents")
+    .select(
+      "id, candidate_id, kind, granted_at, revoked_at, text_version, evidence, candidates ( full_name )",
+    );
+  if (candidateId) q = q.eq("candidate_id", candidateId);
+  const { data, error } = await q.order("granted_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((c: any) => ({
+    ...c,
+    candidate_name: c.candidates?.full_name ?? "—",
+    source: c.evidence?.source ?? "—",
+  }));
+}
+
+/** Отзыв в один клик. Не опция, а условие, без которого базу нельзя хранить. */
+export async function revokeConsent(consentId: string): Promise<void> {
+  if (isDemoMode) {
+    demoConsents = demoConsents.map((c) =>
+      c.id === consentId ? { ...c, revoked_at: new Date().toISOString() } : c,
+    );
+    return;
+  }
+  const { error } = await db()
+    .from("consents")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("id", consentId);
+  if (error) throw error;
+}
+
+export async function requestDeletion(candidateId: string): Promise<void> {
+  if (isDemoMode) {
+    demoConsents = demoConsents.map((c) =>
+      c.candidate_id === candidateId ? { ...c, revoked_at: new Date().toISOString() } : c,
+    );
+    return;
+  }
+  const { error } = await db().from("deletion_requests").insert({ candidate_id: candidateId });
+  if (error) throw error;
+}
+
+// ===========================================================================
+// ПОДМЕНЫ (фишка 55) И РЕФЕРАЛЫ (фишка 60)
+// ===========================================================================
+
+let demoReferrals: Referral[] = [...demo.referrals];
+
+export async function listUrgentNeeds(): Promise<UrgentNeed[]> {
+  if (isDemoMode) return demo.urgentNeeds;
+  const { data, error } = await db()
+    .from("urgent_needs")
+    .select(
+      "id, role, needed_on, hours, rate, status, departments ( name ), candidates ( full_name )",
+    )
+    .order("needed_on");
+  if (error) throw error;
+  return (data ?? []).map((s: any) => ({
+    ...s,
+    department_name: s.departments?.name ?? "—",
+    filled_by_name: s.candidates?.full_name ?? null,
+  }));
+}
+
+export async function listReferrals(): Promise<Referral[]> {
+  if (isDemoMode) return demoReferrals;
+  const { data, error } = await db()
+    .from("referrals")
+    .select(
+      "id, status, bonus_amount, created_at, referrer:profiles ( full_name ), referred:candidates ( full_name ), vacancies ( title )",
+    )
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({
+    id: r.id,
+    referrer_name: r.referrer?.full_name ?? "—",
+    referred_name: r.referred?.full_name ?? "—",
+    vacancy_title: r.vacancies?.title ?? null,
+    status: r.status,
+    bonus_amount: r.bonus_amount,
+    created_at: r.created_at,
+  }));
+}
+
+export async function createReferral(input: {
+  referrer_name: string;
+  referred_name: string;
+  vacancy_title: string | null;
+}): Promise<void> {
+  if (isDemoMode) {
+    demoReferrals = [
+      {
+        id: `rf-${Date.now()}`,
+        referrer_name: input.referrer_name,
+        referred_name: input.referred_name,
+        vacancy_title: input.vacancy_title,
+        status: "submitted",
+        bonus_amount: 15000,
+        created_at: new Date().toISOString(),
+      },
+      ...demoReferrals,
+    ];
+    return;
+  }
+  throw new Error(
+    "В настоящей базе рекомендация заводится вместе с карточкой кандидата: сначала кандидат, потом реферал на него.",
+  );
+}
+
+// ===========================================================================
+// ПОДБОР ИЗ АРХИВА (фишка 9)
+// «ИИ сам приносит пятерых из базы под новую вакансию» — мечта HR.
+// ===========================================================================
+
+export async function getArchiveMatches(vacancyId: string, limit = 5): Promise<ArchiveMatch[]> {
+  const [vacancy, criteria, candidates, applications, reasons] = await Promise.all([
+    getVacancy(vacancyId),
+    listCriteria(vacancyId),
+    listCandidates(),
+    listApplications(),
+    listRejectionReasons(),
+  ]);
+  if (!vacancy) return [];
+
+  // Кому нельзя писать прямо сейчас — считаем один раз, а не в цикле
+  const touchBlocked = new Set<string>();
+  await Promise.all(
+    candidates.map(async (c) => {
+      const ok = await canTouchCandidate(c.id);
+      if (!ok) touchBlocked.add(c.id);
+    }),
+  );
+
+  return matchFromArchive(
+    { vacancy, criteria, candidates, applications, reasons, touchBlocked },
+    limit,
+  );
+}
+
+// ===========================================================================
+// ЗАРПЛАТНАЯ АНАЛИТИКА (фишка 23)
+// Разговор с руководителем на языке денег: вилка X, рынок Y, переплата Z.
+// ===========================================================================
+
+export async function getSalaryGaps(): Promise<SalaryGap[]> {
+  const [applications, vacancies] = await Promise.all([listApplications(), listVacancies()]);
+  return applications
+    .filter((a) => a.status === "active" && a.expected_salary)
+    .map((a) => {
+      const v = vacancies.find((x) => x.id === a.vacancy_id);
+      const c = v?.compensation ?? null;
+      return {
+        application_id: a.id,
+        candidate_name: a.candidate_name,
+        vacancy_title: a.vacancy_title,
+        expected: a.expected_salary,
+        band_min: c?.salary_min ?? null,
+        band_max: c?.salary_max ?? null,
+        market_p50: c?.market_p50 ?? null,
+        over_band:
+          c?.salary_max != null && a.expected_salary != null
+            ? a.expected_salary - c.salary_max
+            : null,
+        over_market:
+          c?.market_p50 != null && a.expected_salary != null
+            ? a.expected_salary - c.market_p50
+            : null,
+      };
+    })
+    .sort((a, b) => (b.over_band ?? -1e9) - (a.over_band ?? -1e9));
+}
+
+// ===========================================================================
+// ПРИЧИНЫ ОТСЕВА (фишка 48)
+// ===========================================================================
+
+export async function getRejectionBreakdown(): Promise<
+  { reason: string; segment: string; count: number }[]
+> {
+  const [applications, reasons] = await Promise.all([
+    listApplications(),
+    listRejectionReasons(),
+  ]);
+  const map = new Map<string, { reason: string; segment: string; count: number }>();
+  applications
+    .filter((a) => a.status === "rejected" && a.rejection_reason_id)
+    .forEach((a) => {
+      const r = reasons.find((x) => x.id === a.rejection_reason_id);
+      if (!r) return;
+      const cur = map.get(r.id) ?? { reason: r.name, segment: r.segment, count: 0 };
+      cur.count += 1;
+      map.set(r.id, cur);
+    });
+  return [...map.values()].sort((a, b) => b.count - a.count);
+}
+
+// ===========================================================================
+// ДЕЙСТВИЯ ПО ОТКЛИКУ
+// ===========================================================================
+
+/**
+ * Мнение команды о кандидате прямо в карточке отклика (фишка 38).
+ * «Мнение о кандидате никто не спрашивает» — боль сотрудников.
+ */
+export async function addTeamOpinion(
+  applicationId: string,
+  verdict: "yes" | "doubt" | "no",
+  comment: string,
+  authorName: string,
+): Promise<void> {
+  if (isDemoMode) {
+    const existing = demo.teamOpinions.findIndex(
+      (o) => o.application_id === applicationId && o.author_name === authorName,
+    );
+    const row = {
+      id: existing >= 0 ? demo.teamOpinions[existing].id : `to-${Date.now()}`,
+      application_id: applicationId,
+      author_name: authorName,
+      verdict,
+      comment: comment || null,
+      created_at: new Date().toISOString(),
+    };
+    if (existing >= 0) demo.teamOpinions[existing] = row;
+    else demo.teamOpinions.push(row);
+    return;
+  }
+  const { data: sess } = await db().auth.getUser();
+  const { error } = await db()
+    .from("team_opinions")
+    .upsert({ application_id: applicationId, author_id: sess.user?.id, verdict, comment });
+  if (error) throw error;
+}
+
+/**
+ * Стоп-лист (фишка 7). Явная сущность с причиной и датой, а не тег:
+ * при новом отклике система предупредит HR сама.
+ */
+export async function setBlacklist(
+  candidateId: string,
+  value: boolean,
+  reason: string,
+): Promise<void> {
+  if (isDemoMode) {
+    const c = demo.candidates.find((x) => x.id === candidateId);
+    if (c) {
+      c.is_blacklisted = value;
+      c.blacklist_reason = value ? reason : null;
+    }
+    return;
+  }
+  const { error } = await db()
+    .from("candidates")
+    .update({
+      is_blacklisted: value,
+      blacklist_reason: value ? reason : null,
+      blacklisted_at: value ? new Date().toISOString() : null,
+    })
+    .eq("id", candidateId);
+  if (error) throw error;
+}
+
+/**
+ * Документы для оформления (фишка 50).
+ *
+ * Перевод на оффер блокируется, пока не закрыты документы, обязательные
+ * именно для этой вакансии. Их список задаётся в вакансии: у разработчика,
+ * бухгалтера и водителя он разный. Узнать о нехватке в день выхода —
+ * значит потерять и человека, и месяц.
+ */
+export async function checkAdmission(
+  candidateId: string,
+  vacancyId?: string,
+): Promise<{ ok: boolean; missing: string[] }> {
+  const docs = await listDocuments(candidateId);
+
+  // Какие документы обязательны — решает вакансия, а не зашитый список:
+  // у курьера, бухгалтера и разработчика он разный.
+  let required: DocumentKind[] = ["passport", "snils", "inn"];
+  if (vacancyId) {
+    const v = await getVacancy(vacancyId);
+    if (v?.required_documents?.length) required = v.required_documents;
+  }
+
+  const missing = required
+    .filter((kind) => {
+      const d = docs.find((x) => x.kind === kind);
+      return !d || !["valid", "expiring"].includes(d.state);
+    })
+    .map((kind) => DOCUMENT_LABEL[kind].toLowerCase());
+
+  return { ok: missing.length === 0, missing };
+}
+
+/**
+ * Автодействия этапа (фишка 10): при переходе задание выдаётся само.
+ * Закрывает боль HR «тестовое приходится отправлять вручную».
+ */
+const STAGE_AUTO_ASSESSMENT: Record<string, { code: string; name: string; kind: string }> = {
+  s2: { code: "test_15min", name: "Короткий тест на 15 минут", kind: "test" },
+  s4: { code: "case_incident", name: "Кейс: разбор инцидента", kind: "case" },
+};
+
+export async function runStageAutoActions(
+  applicationId: string,
+  stageId: string,
+): Promise<string[]> {
+  const done: string[] = [];
+  const tpl = STAGE_AUTO_ASSESSMENT[stageId];
+  if (!tpl) return done;
+
+  if (isDemoMode) {
+    const already = demo.assessments.some(
+      (a) => a.application_id === applicationId && a.template_name === tpl.name,
+    );
+    if (!already) {
+      demo.assessments.push({
+        id: `as-${Date.now()}`,
+        application_id: applicationId,
+        template_name: tpl.name,
+        kind: tpl.kind,
+        status: "assigned",
+        assigned_at: new Date().toISOString(),
+        submitted_at: null,
+        verdict: null,
+        feedback_internal: null,
+        feedback_for_candidate: null,
+      });
+      done.push(`Выдано задание «${tpl.name}»`);
+    }
+    return done;
+  }
+
+  const { data: template } = await db()
+    .from("assessment_templates")
+    .select("id")
+    .eq("code", tpl.code)
+    .maybeSingle();
+  if (!template) return done;
+  const { error } = await db()
+    .from("assessments")
+    .insert({ application_id: applicationId, template_id: template.id, is_auto_assigned: true });
+  if (!error) done.push(`Выдано задание «${tpl.name}»`);
+  return done;
+}
+
+/**
+ * Напоминание ответственному (фишки 13, 40). Через сутки молчания —
+ * напоминание, через двое — эскалация выше.
+ */
+export async function nudgeResponsible(applicationId: string): Promise<string> {
+  const app = await getApplication(applicationId);
+  if (!app) return "Отклик не найден";
+  if (isDemoMode) {
+    return "Напоминание отправлено. Если решения не будет ещё сутки, уйдёт эскалация выше.";
+  }
+  const { error } = await db().from("notifications").insert({
+    kind: "sla_warning",
+    title: `${app.candidate_name} ждёт решения`,
+    body: "Кандидат уходит к тому, кто ответил первым.",
+    entity_kind: "application",
+    entity_id: applicationId,
+  });
+  if (error) throw error;
+  return "Напоминание отправлено";
+}
+
+/**
+ * Итог звонка (обзвон на экране «Все люди»).
+ *
+ * Интерфейс обещает, что результат сохранится в карточке — значит, он
+ * обязан там оказаться. Иначе обзвон превращается в блокнот на коленке,
+ * а история общения, ради которой всё затевалось, снова теряется.
+ */
+export async function logCall(
+  candidateId: string,
+  applicationId: string | null,
+  result: string,
+  note: string,
+  authorName: string,
+): Promise<void> {
+  const body = note.trim() ? `Звонок: ${result}. ${note.trim()}` : `Звонок: ${result}`;
+
+  if (isDemoMode) {
+    demo.notes.unshift({
+      id: `n-call-${Date.now()}-${candidateId}`,
+      candidate_id: candidateId,
+      application_id: applicationId,
+      author_name: authorName,
+      body,
+      visibility: "hiring_team",
+      is_ai: false,
+      created_at: new Date().toISOString(),
+    });
+    const c = demo.candidates.find((x) => x.id === candidateId);
+    if (c) c.last_activity_at = new Date().toISOString();
+
+    // Звонок — это касание. Он идёт в тот же счётчик, что и сообщения,
+    // иначе лимит антиспама можно обойти телефоном.
+    demoTouches.push({ candidateId, at: Date.now() });
+    return;
+  }
+
+  const { data: sess } = await db().auth.getUser();
+  const { error } = await db().from("candidate_notes").insert({
+    candidate_id: candidateId,
+    application_id: applicationId,
+    author_id: sess.user?.id,
+    body,
+    visibility: "hiring_team",
+  });
+  if (error) throw error;
+
+  await db().from("candidate_touches").insert({
+    candidate_id: candidateId,
+    channel: "phone",
+    kind: "call",
+    application_id: applicationId,
+  });
 }

@@ -17,13 +17,8 @@ create type public.vacancy_status as enum (
 
 create type public.vacancy_priority as enum ('low','normal','high','critical');
 
--- Ступень образования: ниша «педагоги» (фишка 52)
-create type public.education_stage as enum (
-  'preschool','primary','middle','high','exam_prep','extra','adults'
-);
-
-create type public.employment_type as enum ('full_time','part_time','hourly','project','substitute');
-create type public.work_format    as enum ('onsite','online','hybrid');
+create type public.employment_type as enum ('full_time','part_time','hourly','project','contract');
+create type public.work_format    as enum ('onsite','remote','hybrid');
 
 create type public.application_status as enum (
   'active','on_hold','rejected','withdrawn','hired'
@@ -39,7 +34,7 @@ create type public.archive_segment as enum (
 );
 
 create type public.criterion_result as enum ('met','partial','not_met','unknown');
-create type public.evidence_source  as enum ('resume','screening','interview','test','case','demo_lesson','documents','reference','manual');
+create type public.evidence_source  as enum ('resume','screening','interview','test','case','practical_check','documents','reference','manual');
 
 create type public.candidate_source as enum (
   'hh','avito','superjob','telegram','referral','archive','direct','website','other'
@@ -119,15 +114,19 @@ create table public.vacancies (
   headcount         int not null default 1,
   hired_count       int not null default 0,
 
-  -- Ниша: педагоги (фишка 52)
-  subject           text,                           -- предмет: математика, программирование
-  education_stages  public.education_stage[] not null default '{}',
+  -- Профиль позиции. Поля отраслево-нейтральные: направление и уровень
+  -- подходят и разработчику, и бухгалтеру, и мастеру участка.
+  specialization    text,                           -- «Разработка», «Продажи»
+  grade             public.grade_level,             -- уровень позиции
   employment_type   public.employment_type not null default 'full_time',
   work_format       public.work_format not null default 'onsite',
   weekly_hours      numeric(5,1),                   -- честная нагрузка в часах (фишка 29)
-  grades            text,                           -- «5–9 класс»
   city              text,
   address           text,
+
+  -- Какие документы обязательны именно для этой вакансии (фишка 50).
+  -- Пока они не закрыты, перевод на оффер блокируется.
+  required_documents public.document_kind[] not null default '{passport,snils,inn}',
 
   -- Честные условия: что реально будет в первый месяц (фишка 29)
   description       text,
@@ -172,7 +171,7 @@ create table public.vacancy_compensation (
 create table public.vacancy_criteria (
   id           uuid primary key default gen_random_uuid(),
   vacancy_id   uuid not null references public.vacancies(id) on delete cascade,
-  name         text not null,          -- «Опыт работы с 5–9 классом от 3 лет»
+  name         text not null,          -- «Коммерческий опыт на Python от 3 лет»
   description  text,
   weight       int not null default 1 check (weight between 1 and 5),
   is_required  boolean not null default false,
@@ -276,26 +275,28 @@ create or replace function public.my_candidate_id()
 returns uuid language sql stable security definer set search_path = public
 as $fn$ select c.id from public.candidates c where c.profile_id = auth.uid() limit 1; $fn$;
 
--- Профиль педагога. Без этих полей поиск «все педагоги по программированию»
--- не работает вообще: искать не по чему (фишка 52).
-create table public.teacher_profiles (
+-- Профессиональный профиль кандидата. Без этих полей поиск по базе
+-- («опытный python из Москвы») не работает вообще: искать не по чему.
+create table public.candidate_profiles (
   candidate_id     uuid primary key references public.candidates(id) on delete cascade,
-  subjects         text[] not null default '{}',
-  education_stages public.education_stage[] not null default '{}',
-  years_with_children int,
+  specialization   text,                            -- «Разработка», «Продажи»
+  skills           text[] not null default '{}',    -- инструменты и навыки
+  grades           public.grade_level[] not null default '{}',
+  years_in_specialty int,
   total_experience_years int,
-  education         text,
-  qualification_category text,          -- первая, высшая
-  available_hours_per_week numeric(5,1),
-  available_from    date,
-  schedule_note     text,               -- «вечера и суббота»
-  ready_for_substitution boolean not null default false,  -- пул подмен (фишка 55)
-  work_formats      public.work_format[] not null default '{}',
-  updated_at        timestamptz not null default now()
+  education        text,
+  certifications   text,
+  expected_salary  numeric(12,2),
+  available_from   date,
+  schedule_note    text,                            -- «готов выйти через две недели»
+  ready_for_urgent_start boolean not null default false,  -- срочные замены (фишка 55)
+  work_formats     public.work_format[] not null default '{}',
+  updated_at       timestamptz not null default now()
 );
-create index idx_teacher_subjects on public.teacher_profiles using gin (subjects);
-create index idx_teacher_stages on public.teacher_profiles using gin (education_stages);
-create index idx_teacher_substitution on public.teacher_profiles (ready_for_substitution) where ready_for_substitution;
+create index idx_profiles_specialization on public.candidate_profiles (specialization);
+create index idx_profiles_skills on public.candidate_profiles using gin (skills);
+create index idx_profiles_grades on public.candidate_profiles using gin (grades);
+create index idx_profiles_urgent on public.candidate_profiles (ready_for_urgent_start) where ready_for_urgent_start;
 
 -- Заметки о кандидате с уровнем видимости.
 -- «Не хочу, чтобы моя активность стала поводом для оценки» — видимость явная.
@@ -620,7 +621,7 @@ alter table public.vacancy_versions             enable row level security;
 alter table public.vacancy_approvals            enable row level security;
 alter table public.vacancy_publications         enable row level security;
 alter table public.candidates                   enable row level security;
-alter table public.teacher_profiles             enable row level security;
+alter table public.candidate_profiles           enable row level security;
 alter table public.candidate_notes              enable row level security;
 alter table public.candidate_tags               enable row level security;
 alter table public.candidate_experience         enable row level security;

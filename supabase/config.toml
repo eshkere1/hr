@@ -1,0 +1,14 @@
+project_id = "bzsujgcsavopvgobqsus"
+
+# Телеграм не умеет присылать JWT: он стучится обычным POST'ом. Если оставить
+# проверку включённой, вебхук будет молча получать 401, а сообщения кандидатов
+# — пропадать. Защита здесь другая и не менее надёжная: заголовок
+# x-telegram-bot-api-secret-token, который функция проверяет первым делом.
+[functions.telegram-webhook]
+verify_jwt = false
+
+# А сюда стучится сама Supabase (Database Webhook) и подставляет service_role
+# в Authorization. Значит, проверку оставляем: эндпоинт умеет писать в
+# Телеграм от имени компании, открывать его наружу незачем.
+[functions.telegram-send]
+verify_jwt = true

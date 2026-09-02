@@ -36,12 +36,22 @@ export default function Pipeline() {
     [activeVacancy?.id],
   );
 
+  const [toast, setToast] = useState<string | null>(null);
+
+  /**
+   * Перетаскивание не просто меняет колонку: у этапа есть автодействия
+   * (фишка 10). Тестовое и кейс уходят сами — «отправляю вручную» было
+   * отдельной строкой в списке болей HR.
+   */
   async function drop(stageId: string) {
     setOverStage(null);
     if (!dragId) return;
     const id = dragId;
     setDragId(null);
+
     await api.moveApplication(id, stageId);
+    const done = await api.runStageAutoActions(id, stageId);
+    if (done.length) setToast(done.join(". "));
     applications.reload();
   }
 
@@ -77,6 +87,18 @@ export default function Pipeline() {
           </Select>
         }
       />
+
+      {toast && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-border border-l-[3px] border-l-good bg-surface px-4 py-3 shadow-sh-1">
+          <p className="m-0 text-[13.5px] text-ink-2">{toast}</p>
+          <button
+            onClick={() => setToast(null)}
+            className="shrink-0 text-[12px] text-ink-3 hover:text-ink"
+          >
+            Понятно
+          </button>
+        </div>
+      )}
 
       {applications.loading || stages.loading ? (
         <div className="flex gap-3">

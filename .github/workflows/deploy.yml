@@ -1,0 +1,66 @@
+name: Выкладка на GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Права нужны самому GitHub Pages: без них выкладка падает на последнем шаге.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Если пушнули дважды подряд, вторая сборка отменяет первую: выкатывать
+# устаревшую версию поверх новой смысла нет.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - run: npm ci
+        working-directory: app
+
+      - name: Сборка
+        working-directory: app
+        env:
+          GITHUB_PAGES: "1"
+          # Эти два значения публичны по своей природе: они попадают в
+          # браузерный бандл и видны любому посетителю. Защита не в их
+          # секретности, а в политиках RLS на стороне базы. Служебному
+          # ключу (service_role) здесь места нет ни при каких условиях.
+          VITE_SUPABASE_URL: https://bzsujgcsavopvgobqsus.supabase.co
+          VITE_SUPABASE_ANON_KEY: sb_publishable_cTKxi6RtUTstGOEHcXoxPQ_5xdQa_3u
+        run: npm run build
+
+      - name: Заглушка для внутренних адресов
+        # GitHub Pages ничего не знает о маршрутах внутри приложения. Прямой
+        # заход на /hr/people для него — несуществующий файл, и он отдаёт
+        # 404.html. Кладём туда ту же страницу: приложение поднимется и само
+        # разберёт адрес. Без этого работала бы только главная.
+        run: cp app/dist/index.html app/dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

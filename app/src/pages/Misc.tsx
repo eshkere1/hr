@@ -1,14 +1,16 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, UserPlus } from "lucide-react";
 import * as api from "@/lib/api";
 import { useAsync } from "@/hooks/useAsync";
 import { useAuth } from "@/hooks/useAuth";
 import {
-  Avatar, Button, Card, Skeleton, Table, TableWrap, Tag, Td, Th,
+  Avatar, Button, Card, Field, Input, Modal, Select, Skeleton, Table,
+  TableWrap, Tag, Td, Textarea, Th,
 } from "@/components/ui";
 import { Kpi, PageHeader } from "@/components/app/primitives";
 import { Funnel } from "./Dashboard";
-import { ROLE_LABEL, type AppRole } from "@/lib/types";
+import { REFERRAL_STATUS_LABEL, ROLE_LABEL, type AppRole } from "@/lib/types";
 import { daysSince, daysWord, money } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -122,6 +124,10 @@ export function Analytics() {
         </div>
       </section>
 
+      <SalaryGaps />
+
+      <RejectionReasons />
+
       {open[0] && (
         <section>
           <h2 className="mb-3 font-display text-[20px] font-semibold tracking-[-0.01em]">
@@ -139,6 +145,10 @@ export function Analytics() {
 // ---------------------------------------------------------------------------
 export function MyProfile() {
   const { profile, roles } = useAuth();
+  const [referring, setReferring] = useState(false);
+  const referrals = useAsync(() => api.listReferrals(), []);
+  const mine = (referrals.data ?? []).filter((r) => r.referrer_name === profile?.full_name);
+
   return (
     <>
       <PageHeader eyebrow="Сотрудник" title="Мой профиль" />
@@ -166,11 +176,39 @@ export function MyProfile() {
             платится после испытательного срока.
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm">Порекомендовать знакомого</Button>
+            <Button size="sm" onClick={() => setReferring(true)}>
+              <UserPlus className="h-4 w-4" /> Порекомендовать знакомого
+            </Button>
             <Link to="/pipeline">
               <Button size="sm" variant="secondary">Посмотреть кандидатов</Button>
             </Link>
           </div>
+
+          {mine.length > 0 && (
+            <div className="border-t border-border pt-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-3">
+                Мои рекомендации
+              </div>
+              <div className="flex flex-col gap-2">
+                {mine.map((r) => (
+                  <div key={r.id} className="flex items-center justify-between gap-2 text-[13px]">
+                    <span>{r.referred_name}</span>
+                    <Tag
+                      tone={
+                        r.status === "bonus_paid" || r.status === "passed_probation"
+                          ? "good"
+                          : r.status === "rejected"
+                            ? "mute"
+                            : "info"
+                      }
+                    >
+                      {REFERRAL_STATUS_LABEL[r.status]}
+                    </Tag>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </Card>
 
         <Card className="lg:col-span-2">
@@ -185,7 +223,104 @@ export function MyProfile() {
           </p>
         </Card>
       </div>
+
+      <ReferralModal
+        open={referring}
+        referrerName={profile?.full_name ?? "—"}
+        onClose={() => setReferring(false)}
+        onDone={() => {
+          setReferring(false);
+          referrals.reload();
+        }}
+      />
     </>
+  );
+}
+
+/**
+ * Рекомендация в два клика (фишка 60).
+ *
+ * Самый дешёвый канал найма и мечта команды из таблицы стейкхолдеров.
+ * Спрашиваем минимум: имя, контакт и одну фразу «почему он». Форма
+ * на десять полей убивает этот канал вернее, чем отсутствие бонуса.
+ */
+function ReferralModal({
+  open,
+  referrerName,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  referrerName: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const vacancies = useAsync(() => api.listVacancies(), []);
+  const [name, setName] = useState("");
+  const [contact, setContact] = useState("");
+  const [why, setWhy] = useState("");
+  const [vacancyTitle, setVacancyTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Порекомендовать знакомого"
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Отмена
+          </Button>
+          <Button
+            size="sm"
+            disabled={!name.trim() || !contact.trim() || busy}
+            onClick={async () => {
+              setBusy(true);
+              await api.createReferral({
+                referrer_name: referrerName,
+                referred_name: name.trim(),
+                vacancy_title: vacancyTitle || null,
+              });
+              setBusy(false);
+              onDone();
+            }}
+          >
+            Отправить
+          </Button>
+        </>
+      }
+    >
+      <p className="m-0 text-sm text-ink-2">
+        Дальше с человеком свяжется HR. Бонус выплачивается после того, как он
+        пройдёт испытательный срок, — так рекомендуют тех, за кого не стыдно.
+      </p>
+
+      <Field label="Кого рекомендуете" htmlFor="rn">
+        <Input id="rn" value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Как с ним связаться" htmlFor="rc" hint="Телефон или ник в Телеграме">
+        <Input id="rc" value={contact} onChange={(e) => setContact(e.target.value)} />
+      </Field>
+      <Field label="На какую вакансию" htmlFor="rv" hint="Можно не выбирать">
+        <Select id="rv" value={vacancyTitle} onChange={(e) => setVacancyTitle(e.target.value)}>
+          <option value="">Не знаю, посмотрите сами</option>
+          {(vacancies.data ?? []).map((v) => (
+            <option key={v.id} value={v.title}>
+              {v.title}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Почему он" htmlFor="rw" hint="Одна фраза. Её прочитает HR перед звонком">
+        <Textarea
+          id="rw"
+          value={why}
+          onChange={(e) => setWhy(e.target.value)}
+          className="min-h-[56px]"
+        />
+      </Field>
+    </Modal>
   );
 }
 
@@ -227,7 +362,7 @@ export function Admin() {
               [
                 ["superuser", "Всё. Единственный, кто раздаёт роли и читает журнал аудита"],
                 ["director", "Дашборд по компании, согласование вакансий и офферов, деньги"],
-                ["hr_manager", "Воронка, база педагогов, переписка, документы"],
+                ["hr_manager", "Воронка, база кандидатов, переписка, документы"],
                 ["dept_head", "Только свои вакансии и отклики по ним. Вилку — по своим"],
                 ["line_manager", "Свои вакансии, свои интервью, своя команда. Вилку не видит"],
                 ["employee", "Своя карточка, мнение о кандидате, рекомендации"],
@@ -259,5 +394,142 @@ export function NotFound() {
         <Button size="sm">На главный экран</Button>
       </Link>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Зарплатная аналитика (фишка 23).
+// Нет ни у одного из проверенных конкурентов: поле «зарплата» есть у всех,
+// а разговора на языке денег — ни у кого. Здесь он появляется: вилка X,
+// рынок Y, переплата Z по конкретному человеку.
+// ---------------------------------------------------------------------------
+function SalaryGaps() {
+  const gaps = useAsync(() => api.getSalaryGaps(), []);
+  if (gaps.loading) return <Skeleton className="mb-8 h-40 w-full" />;
+
+  const list = gaps.data ?? [];
+  if (list.length === 0) return null;
+
+  const overBand = list.filter((g) => (g.over_band ?? 0) > 0);
+  const totalOver = overBand.reduce((sum, g) => sum + (g.over_band ?? 0), 0);
+
+  return (
+    <section className="mb-8">
+      <h2 className="mb-3 font-display text-[20px] font-semibold tracking-[-0.01em]">
+        Ожидания против вилки и рынка
+      </h2>
+      <p className="mb-4 max-w-[64ch] text-[13.5px] text-ink-2">
+        {overBand.length > 0 ? (
+          <>
+            Выше утверждённой вилки просят{" "}
+            <b className="font-mono">{overBand.length}</b> из{" "}
+            <span className="font-mono">{list.length}</span>. Если согласиться со
+            всеми, годовой фонд вырастет на{" "}
+            <b className="font-mono text-warn">{money(totalOver * 12)}</b> —
+            это и есть цена решения «ну давайте добавим».
+          </>
+        ) : (
+          <>Все, кто в работе, укладываются в утверждённые вилки.</>
+        )}
+      </p>
+
+      <TableWrap>
+        <Table className="min-w-[760px]">
+          <thead>
+            <tr>
+              <Th>Кандидат</Th>
+              <Th>Вакансия</Th>
+              <Th className="text-right">Просит</Th>
+              <Th className="text-right">Вилка</Th>
+              <Th className="text-right">Рынок</Th>
+              <Th className="text-right">Разрыв</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((g) => (
+              <tr key={g.application_id} className="hover:bg-surface-2">
+                <Td>
+                  <Link to={`/applications/${g.application_id}`}>{g.candidate_name}</Link>
+                </Td>
+                <Td className="text-ink-2">{g.vacancy_title}</Td>
+                <Td className="text-right font-mono tabular-nums">{money(g.expected)}</Td>
+                <Td className="text-right font-mono tabular-nums text-ink-3">
+                  до {money(g.band_max)}
+                </Td>
+                <Td className="text-right font-mono tabular-nums text-ink-3">
+                  {money(g.market_p50)}
+                </Td>
+                <Td className="text-right">
+                  {g.over_band == null ? (
+                    "—"
+                  ) : g.over_band > 0 ? (
+                    <Tag tone="warn">выше вилки на {money(g.over_band)}</Tag>
+                  ) : (
+                    <Tag tone="good">в вилке</Tag>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </TableWrap>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Причины отсева (фишка 48).
+// Проблема владельца: «непонятно, где именно ломается воронка». Конверсия
+// показывает где, а этот блок — почему. Питается справочником причин.
+// ---------------------------------------------------------------------------
+function RejectionReasons() {
+  const breakdown = useAsync(() => api.getRejectionBreakdown(), []);
+  if (breakdown.loading) return <Skeleton className="mb-8 h-40 w-full" />;
+
+  const list = breakdown.data ?? [];
+  if (list.length === 0) return null;
+
+  const total = list.reduce((s, r) => s + r.count, 0);
+  const SEGMENT_LABEL: Record<string, string> = {
+    not_now: "Не сейчас",
+    not_our_profile: "Не наш профиль",
+    not_ready: "Не готов",
+    stop_list: "Стоп-лист",
+  };
+
+  return (
+    <section className="mb-8">
+      <h2 className="mb-3 font-display text-[20px] font-semibold tracking-[-0.01em]">
+        Почему отказываем
+      </h2>
+      <p className="mb-4 max-w-[64ch] text-[13.5px] text-ink-2">
+        Конверсия показывает, где обрыв. Этот список — почему. Если наверху
+        оказывается «не сошлись по деньгам», проблема не в воронке, а в вилке;
+        если «не хватает опыта в направлении» — в тексте вакансии и канале привлечения.
+      </p>
+
+      <Card className="flex flex-col gap-[7px]">
+        {list.map((r) => {
+          const share = (r.count / total) * 100;
+          return (
+            <div
+              key={r.reason}
+              className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_92px] items-center gap-3"
+            >
+              <span className="truncate text-[13px] text-ink-2">{r.reason}</span>
+              <div className="h-[20px] overflow-hidden rounded-sm bg-surface-2">
+                <div
+                  className="h-full rounded-r-sm bg-info"
+                  style={{ width: `${Math.max(share, 2)}%` }}
+                />
+              </div>
+              <span className="text-right font-mono text-[12.5px] tabular-nums text-ink-2">
+                {r.count} · {SEGMENT_LABEL[r.segment] ?? r.segment}
+              </span>
+            </div>
+          );
+        })}
+      </Card>
+    </section>
   );
 }

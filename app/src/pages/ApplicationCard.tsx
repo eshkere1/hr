@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Bot, Check, HelpCircle, Minus, X as XIcon, Sparkles,
+  AlertTriangle, Ban, BellRing,
 } from "lucide-react";
 import * as api from "@/lib/api";
 import { useAsync } from "@/hooks/useAsync";
@@ -10,6 +11,8 @@ import {
   Avatar, Button, Card, Field, Modal, Select, Skeleton, Tabs, Tag, Textarea,
 } from "@/components/ui";
 import { CriteriaMeter, SlaIndicator, StageChip } from "@/components/app/primitives";
+import { SelfBooking } from "./Calendar";
+import { CHECK_ASPECTS, DOCUMENT_LABEL } from "@/lib/types";
 import { SOURCE_LABEL, type CriteriaResult, type CriterionResult } from "@/lib/types";
 import { cn, dateRu, dateTimeRu, money } from "@/lib/utils";
 
@@ -18,6 +21,7 @@ const TABS = [
   { id: "chat", label: "Переписка" },
   { id: "assessment", label: "Тест и кейс" },
   { id: "calls", label: "Созвоны" },
+  { id: "practical", label: "Практическая проверка" },
   { id: "docs", label: "Документы" },
 ];
 
@@ -31,6 +35,8 @@ export default function ApplicationCard() {
   const { profile, can } = useAuth();
   const [tab, setTab] = useState("profile");
   const [rejectOpen, setRejectOpen] = useState(false);
+  const [blockOpen, setBlockOpen] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "good" | "warn" | "crit"; text: string } | null>(null);
 
   const application = useAsync(() => api.getApplication(id), [id]);
   const stages = useAsync(() => api.listStages(), []);
@@ -65,9 +71,36 @@ export default function ApplicationCard() {
     );
   }
 
+  /**
+   * Перевод на следующий этап.
+   *
+   * Здесь два правила ниши, а не просто смена статуса:
+   * без действующего допуска к детям на оффер двигать нельзя (фишка 50),
+   * а при переходе задание выдаётся само (фишка 10) — «тестовое приходится
+   * отправлять вручную» было отдельной болью HR.
+   */
   async function moveNext() {
-    if (!nextStage) return;
-    await api.moveApplication(app!.id, nextStage.id);
+    if (!nextStage || !app) return;
+
+    if (nextStage.code === "offer") {
+      const admission = await api.checkAdmission(app.candidate_id, app.vacancy_id);
+      if (!admission.ok) {
+        setNotice({
+          tone: "crit",
+          text: `Нельзя двинуть на оффер: не закрыты обязательные для этой вакансии документы — ${admission.missing.join(", ")}. Их оформление занимает недели, поэтому запрашивать надо сейчас, а не в день выхода.`,
+        });
+        return;
+      }
+    }
+
+    await api.moveApplication(app.id, nextStage.id);
+    const done = await api.runStageAutoActions(app.id, nextStage.id);
+    setNotice({
+      tone: "good",
+      text: done.length
+        ? `Этап «${nextStage.name}». ${done.join(". ")} — отправлять вручную не нужно.`
+        : `Этап «${nextStage.name}».`,
+    });
     application.reload();
   }
 
@@ -91,8 +124,8 @@ export default function ApplicationCard() {
                   {app.candidate_name}
                 </h1>
                 <div className="mt-1 text-[12.5px] text-ink-3">
-                  {candidate.data?.teacher
-                    ? `${candidate.data.teacher.subjects.join(", ")} · опыт ${candidate.data.teacher.total_experience_years} лет`
+                  {candidate.data?.profile
+                    ? `${candidate.data.profile.specialization} · опыт ${candidate.data.profile.total_experience_years} лет`
                     : app.subtitle}
                 </div>
               </div>
@@ -136,6 +169,45 @@ export default function ApplicationCard() {
               <Button variant="secondary" onClick={() => setRejectOpen(true)}>
                 Отказать
               </Button>
+              {/* Дожим руководителя, а не только кандидата (фишка 40) */}
+              <Button
+                variant="ghost"
+                onClick={async () => {
+                  const msg = await api.nudgeResponsible(app.id);
+                  setNotice({ tone: "warn", text: msg });
+                }}
+              >
+                <BellRing className="h-4 w-4" /> Напомнить о решении
+              </Button>
+              <Button variant="ghost" className="text-crit" onClick={() => setBlockOpen(true)}>
+                <Ban className="h-4 w-4" /> В стоп-лист
+              </Button>
+            </Card>
+          )}
+
+          {notice && (
+            <Card
+              className={cn(
+                "border-l-[3px] p-4",
+                notice.tone === "good" && "border-l-good",
+                notice.tone === "warn" && "border-l-warn",
+                notice.tone === "crit" && "border-l-crit",
+              )}
+            >
+              <div className="flex items-start gap-2">
+                {notice.tone === "crit" ? (
+                  <AlertTriangle className="mt-[2px] h-4 w-4 shrink-0 text-crit" />
+                ) : (
+                  <Check className="mt-[2px] h-4 w-4 shrink-0 text-good" />
+                )}
+                <p className="m-0 text-[13px] text-ink-2">{notice.text}</p>
+              </div>
+              <button
+                onClick={() => setNotice(null)}
+                className="mt-2 text-[12px] text-ink-3 hover:text-ink"
+              >
+                Понятно
+              </button>
             </Card>
           )}
         </aside>
@@ -156,11 +228,30 @@ export default function ApplicationCard() {
             )}
             {tab === "chat" && <ChatTab candidateId={app.candidate_id} />}
             {tab === "assessment" && <AssessmentTab applicationId={app.id} />}
-            {tab === "calls" && <CallsTab applicationId={app.id} />}
+            {tab === "calls" && (
+              <CallsTab applicationId={app.id} vacancyId={app.vacancy_id} />
+            )}
+            {tab === "practical" && <PracticalTab applicationId={app.id} />}
             {tab === "docs" && <DocsTab candidateId={app.candidate_id} />}
           </div>
         </div>
       </div>
+
+      <BlacklistModal
+        open={blockOpen}
+        candidateName={app.candidate_name}
+        onClose={() => setBlockOpen(false)}
+        onDone={async (reason) => {
+          await api.setBlacklist(app.candidate_id, true, reason);
+          await api.rejectApplication(app.id, "r12", reason);
+          setBlockOpen(false);
+          application.reload();
+          setNotice({
+            tone: "crit",
+            text: "Кандидат в стоп-листе. При новом отклике система предупредит HR сама и остановит отклик до проверки.",
+          });
+        }}
+      />
 
       <RejectModal
         open={rejectOpen}
@@ -311,6 +402,8 @@ function ProfileTab({
         </section>
       )}
 
+      <TeamOpinionForm applicationId={applicationId} onSaved={() => opinions.reload()} />
+
       {(notes.data?.length ?? 0) > 0 && (
         <section>
           <h3 className="mb-3 text-[11.5px] font-semibold uppercase tracking-[0.1em] text-ink-3">
@@ -451,25 +544,35 @@ function AssessmentTab({ applicationId }: { applicationId: string }) {
 // ---------------------------------------------------------------------------
 // Созвоны
 // ---------------------------------------------------------------------------
-function CallsTab({ applicationId }: { applicationId: string }) {
+function CallsTab({
+  applicationId,
+  vacancyId,
+}: {
+  applicationId: string;
+  vacancyId: string;
+}) {
   const items = useAsync(() => api.listInterviews(applicationId), [applicationId]);
   if (items.loading) return <Skeleton className="h-48 w-full" />;
-  if ((items.data ?? []).length === 0) {
-    return (
-      <Card>
-        <p className="m-0 text-[13.5px] text-ink-2">Созвонов ещё не было.</p>
-      </Card>
-    );
-  }
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Самозапись: кандидат выбирает время сам, переписка о слотах не нужна */}
+      <SelfBooking applicationId={applicationId} vacancyId={vacancyId} />
+
+      {(items.data ?? []).length === 0 && (
+        <Card>
+          <p className="m-0 text-[13.5px] text-ink-2">
+            Созвонов ещё не было. Как только встреча пройдёт, здесь появятся
+            саммари и выводы по критериям вакансии.
+          </p>
+        </Card>
+      )}
       {(items.data ?? []).map((i) => (
         <Card key={i.id} className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <b className="font-display text-[16px] font-semibold">
-                {i.kind === "demo_lesson" ? "Демо-урок" : "Интервью"}
+                {i.kind === "practical_check" ? "Практическая проверка" : "Интервью"}
               </b>
               <div className="mt-[2px] text-[12.5px] text-ink-3">
                 {dateTimeRu(i.scheduled_at)} · {i.work_format === "online" ? "онлайн" : "очно"}
@@ -510,7 +613,7 @@ function CallsTab({ applicationId }: { applicationId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Документы. Ниша: без допуска педагога не пустят к детям.
+// Документы. Список обязательных задаётся в вакансии, а не в коде.
 // ---------------------------------------------------------------------------
 const DOC_STATE_VIEW = {
   valid: { tone: "good" as const, label: "В порядке" },
@@ -531,6 +634,7 @@ function DocsTab({ candidateId }: { candidateId: string }) {
       <Card>
         <p className="m-0 text-[13.5px] text-ink-2">
           Документы ещё не загружены. Кандидат может прислать их прямо в чат бота.
+          Какие из них обязательны, задаётся в вакансии.
         </p>
       </Card>
     );
@@ -546,20 +650,7 @@ function DocsTab({ candidateId }: { candidateId: string }) {
             className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3 last:border-0 last:pb-0"
           >
             <div>
-              <div className="text-[13.5px] font-medium">
-                {
-                  {
-                    criminal_record: "Справка об отсутствии судимости",
-                    medical_book: "Медкнижка",
-                    diploma: "Диплом",
-                    qualification: "Категория",
-                    passport: "Паспорт",
-                    snils: "СНИЛС",
-                    inn: "ИНН",
-                    other: "Другое",
-                  }[d.kind]
-                }
-              </div>
+              <div className="text-[13.5px] font-medium">{DOCUMENT_LABEL[d.kind]}</div>
               {d.expires_on && (
                 <div className="font-mono text-[11.5px] text-ink-3">до {dateRu(d.expires_on)}</div>
               )}
@@ -666,5 +757,349 @@ function RejectModal({
         </>
       )}
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Практическая проверка (фишка 51). Человек делает настоящую рабочую задачу,
+// а не рассказывает о себе. Пять аспектов одинаковы для всех ролей, поэтому
+// проверки сравнимы между собой.
+// ---------------------------------------------------------------------------
+const CHECK_RESULT_TONE: Record<CriterionResult, "good" | "warn" | "crit" | "mute"> = {
+  met: "good",
+  partial: "warn",
+  not_met: "crit",
+  unknown: "mute",
+};
+
+function PracticalTab({ applicationId }: { applicationId: string }) {
+  const { profile } = useAuth();
+  const checks = useAsync(() => api.listPracticalChecks(applicationId), [applicationId]);
+  const [scoring, setScoring] = useState(false);
+  const [draft, setDraft] = useState<Record<string, { result: CriterionResult; comment: string }>>(
+    {},
+  );
+  const [verdict, setVerdict] = useState("strong");
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (checks.loading) return <Skeleton className="h-48 w-full" />;
+
+  const check = (checks.data ?? [])[0];
+  if (!check) {
+    return (
+      <Card>
+        <p className="m-0 text-[13.5px] text-ink-2">
+          Практическая проверка не назначена. Она появится, когда отклик дойдёт
+          до этого этапа — и это единственный шаг отбора, где видно, как человек
+          работает, а не как он о себе рассказывает.
+        </p>
+      </Card>
+    );
+  }
+
+  const done = check.scores.length > 0;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <b className="font-display text-[17px] font-semibold">
+              {check.task ?? "Задача не задана"}
+            </b>
+            <div className="mt-1 text-[12.5px] text-ink-3">
+              {[check.context, check.audience, dateTimeRu(check.scheduled_at)]
+                .filter(Boolean)
+                .join(" · ")}
+            </div>
+          </div>
+          {check.verdict ? (
+            <Tag tone={check.verdict === "strong" ? "good" : "warn"}>
+              {check.verdict === "strong" ? "Сильно" : "Есть вопросы"}
+            </Tag>
+          ) : (
+            <Tag tone="info">Ждём проверки</Tag>
+          )}
+        </div>
+
+        {check.comment && (
+          <div>
+            <div className="mb-1 text-[11.5px] font-semibold uppercase tracking-[0.1em] text-ink-3">
+              Вывод проверяющего · {check.reviewer_name}
+            </div>
+            <p className="m-0 text-[13.5px] text-ink-2">{check.comment}</p>
+          </div>
+        )}
+      </Card>
+
+      {done && (
+        <Card className="flex flex-col gap-3">
+          <div className="text-[11.5px] font-semibold uppercase tracking-[0.1em] text-ink-3">
+            Оценочный лист
+          </div>
+          {check.scores.map((sc) => (
+            <div
+              key={sc.id}
+              className="flex flex-wrap items-start justify-between gap-2 border-b border-border pb-3 last:border-0 last:pb-0"
+            >
+              <div className="min-w-0">
+                <div className="text-[13.5px] font-medium">{sc.aspect}</div>
+                {sc.comment && <p className="m-0 mt-1 text-[12.5px] text-ink-2">{sc.comment}</p>}
+              </div>
+              <Tag tone={CHECK_RESULT_TONE[sc.result]}>
+                {sc.result === "met"
+                  ? "Да"
+                  : sc.result === "partial"
+                    ? "Частично"
+                    : sc.result === "not_met"
+                      ? "Нет"
+                      : "Не смотрели"}
+              </Tag>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {!done && !scoring && (
+        <Button onClick={() => setScoring(true)}>Заполнить оценочный лист</Button>
+      )}
+
+      {scoring && (
+        <Card className="flex flex-col gap-4">
+          <p className="m-0 text-[13px] text-ink-2">
+            Пять аспектов одинаковы для всех ролей: они про то, как человек
+            работает. Предметную часть закрывают критерии вакансии — иначе
+            сравнивать проверки между собой невозможно, и решение снова
+            становится вопросом впечатления.
+          </p>
+
+          {CHECK_ASPECTS.map((aspect) => (
+            <div key={aspect} className="flex flex-col gap-2 border-b border-border pb-3">
+              <div className="text-[13.5px] font-medium">{aspect}</div>
+              <div className="flex flex-wrap gap-2">
+                {(["met", "partial", "not_met"] as CriterionResult[]).map((r) => (
+                  <button
+                    key={r}
+                    onClick={() =>
+                      setDraft((d) => ({
+                        ...d,
+                        [aspect]: { result: r, comment: d[aspect]?.comment ?? "" },
+                      }))
+                    }
+                    className={cn(
+                      "rounded-md border px-3 py-[6px] text-[12.5px] transition-colors",
+                      draft[aspect]?.result === r
+                        ? "border-primary bg-primary-soft font-semibold text-primary"
+                        : "border-border bg-surface text-ink-2 hover:border-border-strong",
+                    )}
+                  >
+                    {r === "met" ? "Да" : r === "partial" ? "Частично" : "Нет"}
+                  </button>
+                ))}
+              </div>
+              <Textarea
+                placeholder="Что именно вы увидели — одна фраза"
+                value={draft[aspect]?.comment ?? ""}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    [aspect]: { result: d[aspect]?.result ?? "unknown", comment: e.target.value },
+                  }))
+                }
+                className="min-h-[48px]"
+              />
+            </div>
+          ))}
+
+          <Field label="Общий вывод" htmlFor="verdict">
+            <Select id="verdict" value={verdict} onChange={(e) => setVerdict(e.target.value)}>
+              <option value="strong">Сильно — берём</option>
+              <option value="ok">Нормально, но есть вопросы</option>
+              <option value="weak">Слабо</option>
+            </Select>
+          </Field>
+
+          <Field label="Комментарий проверяющего" htmlFor="mc">
+            <Textarea id="mc" value={comment} onChange={(e) => setComment(e.target.value)} />
+          </Field>
+
+          <div className="flex gap-2">
+            <Button
+              disabled={busy || Object.keys(draft).length === 0}
+              onClick={async () => {
+                setBusy(true);
+                await api.saveCheckScores(
+                  check.id,
+                  CHECK_ASPECTS.map((a) => ({
+                    aspect: a,
+                    result: draft[a]?.result ?? "unknown",
+                    comment: draft[a]?.comment ?? "",
+                  })),
+                  profile?.full_name ?? "—",
+                  verdict,
+                  comment,
+                );
+                setBusy(false);
+                setScoring(false);
+                checks.reload();
+              }}
+            >
+              Сохранить оценку
+            </Button>
+            <Button variant="secondary" onClick={() => setScoring(false)}>
+              Отмена
+            </Button>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Стоп-лист (фишка 7). Явная сущность с причиной и датой, а не тег:
+// при новом отклике система предупредит HR сама.
+// ---------------------------------------------------------------------------
+function BlacklistModal({
+  open,
+  candidateName,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  candidateName: string;
+  onClose: () => void;
+  onDone: (reason: string) => Promise<void>;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`В стоп-лист · ${candidateName}`}
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Отмена
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={reason.trim().length < 5 || busy}
+            onClick={async () => {
+              setBusy(true);
+              await onDone(reason.trim());
+              setBusy(false);
+            }}
+          >
+            В стоп-лист
+          </Button>
+        </>
+      }
+    >
+      <p className="m-0 text-sm text-ink-2">
+        {candidateName} больше не будет попадать в подбор, а при новом отклике
+        система остановит его и предупредит HR. Причина сохранится в карточке
+        и будет видна тому, кто столкнётся с этим человеком через год.
+      </p>
+      <Field
+        label="Причина"
+        htmlFor="bl-reason"
+        hint="Обязательно и своими словами: через год «просто не подошёл» ничего не объяснит"
+      >
+        <Textarea id="bl-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+      </Field>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Мнение команды о кандидате (фишка 38).
+// «Мнение о кандидате никто не спрашивает» — боль сотрудников из таблицы.
+// Три варианта вместо шкалы: «сомневаюсь» — это тоже ответ, и он полезнее
+// натянутой четвёрки по пятибалльной шкале.
+// ---------------------------------------------------------------------------
+function TeamOpinionForm({
+  applicationId,
+  onSaved,
+}: {
+  applicationId: string;
+  onSaved: () => void;
+}) {
+  const { profile } = useAuth();
+  const [verdict, setVerdict] = useState<"yes" | "doubt" | "no" | null>(null);
+  const [comment, setComment] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  if (saved) {
+    return (
+      <Card className="border-l-[3px] border-l-good">
+        <p className="m-0 text-[13.5px] text-ink-2">
+          Мнение записано и видно всей команде найма. Кандидат его не увидит.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div>
+        <div className="text-[11.5px] font-semibold uppercase tracking-[0.1em] text-ink-3">
+          Ваше мнение о кандидате
+        </div>
+        <p className="m-0 mt-1 text-[13px] text-ink-2">
+          Если вы с ним пересекались или были на интервью — скажите. Это видно
+          команде найма и не видно кандидату.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {(
+          [
+            ["yes", "За"],
+            ["doubt", "Сомневаюсь"],
+            ["no", "Против"],
+          ] as const
+        ).map(([v, label]) => (
+          <button
+            key={v}
+            onClick={() => setVerdict(v)}
+            className={cn(
+              "rounded-md border px-4 py-2 text-[13px] transition-colors",
+              verdict === v
+                ? "border-primary bg-primary-soft font-semibold text-primary"
+                : "border-border bg-surface text-ink-2 hover:border-border-strong",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <Textarea
+        placeholder="Почему — одна-две фразы. Без этого «против» ничего не объясняет"
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        className="min-h-[56px]"
+      />
+
+      <div>
+        <Button
+          size="sm"
+          disabled={!verdict}
+          onClick={async () => {
+            if (!verdict) return;
+            await api.addTeamOpinion(applicationId, verdict, comment, profile?.full_name ?? "—");
+            setSaved(true);
+            onSaved();
+          }}
+        >
+          Записать мнение
+        </Button>
+      </div>
+    </Card>
   );
 }

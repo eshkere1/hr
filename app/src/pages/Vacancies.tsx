@@ -1,15 +1,18 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { Sparkles } from "lucide-react";
 import * as api from "@/lib/api";
 import { useAsync } from "@/hooks/useAsync";
 import { useAuth } from "@/hooks/useAuth";
+import { Button, Textarea } from "@/components/ui";
 import {
   Card, Skeleton, Table, TableWrap, Tabs, Tag, Td, Th,
 } from "@/components/ui";
 import { EmptyState, PageHeader, StageChip } from "@/components/app/primitives";
 import { Funnel } from "./Dashboard";
 import {
-  PRIORITY_LABEL, VACANCY_STATUS_LABEL, type VacancyPriority, type VacancyStatus,
+  GRADE_LABEL, PRIORITY_LABEL, VACANCY_STATUS_LABEL,
+  type VacancyPriority, type VacancyStatus,
 } from "@/lib/types";
 import { daysSince, daysWord, dateRu, money } from "@/lib/utils";
 
@@ -93,7 +96,12 @@ export default function Vacancies() {
                       <Link to={`/vacancies/${v.id}`} className="font-medium">
                         {v.title}
                       </Link>
-                      {v.grades && <div className="text-xs text-ink-3">{v.grades}</div>}
+                      {v.specialization && (
+                        <div className="text-xs text-ink-3">
+                          {v.specialization}
+                          {v.grade ? ` · ${GRADE_LABEL[v.grade]}` : ""}
+                        </div>
+                      )}
                     </Td>
                     <Td className="text-ink-2">{v.department_name}</Td>
                     <Td>
@@ -171,7 +179,10 @@ export function VacancyCard() {
         tabs={[
           { id: "profile", label: "Профиль" },
           { id: "criteria", label: "Критерии", count: (criteria.data ?? []).length },
+          { id: "questions", label: "Вопросы на интервью" },
           { id: "funnel", label: "Воронка" },
+          { id: "approval", label: "Согласование" },
+          { id: "versions", label: "Версии требований" },
         ]}
       />
 
@@ -189,7 +200,8 @@ export function VacancyCard() {
                 <Info label="Нагрузка">
                   {v.weekly_hours ? `${v.weekly_hours} ч в неделю` : "—"}
                 </Info>
-                <Info label="Классы">{v.grades ?? "—"}</Info>
+                <Info label="Направление">{v.specialization ?? "—"}</Info>
+                <Info label="Уровень">{v.grade ? GRADE_LABEL[v.grade] : "—"}</Info>
                 <Info label="Заказчик">{v.hiring_manager_name ?? "—"}</Info>
                 <Info label="Ответственный HR">{v.recruiter_name ?? "—"}</Info>
                 <Info label="Нужно человек">
@@ -246,6 +258,10 @@ export function VacancyCard() {
             )}
           </div>
         )}
+
+        {tab === "questions" && <QuestionsTab vacancyId={v.id} />}
+        {tab === "approval" && <ApprovalTab vacancyId={v.id} />}
+        {tab === "versions" && <VersionsTab vacancyId={v.id} />}
 
         {tab === "funnel" && (
           <div className="flex flex-col gap-5">
@@ -308,6 +324,207 @@ function Info({ label, children }: { label: string; children: React.ReactNode })
     <div className="flex items-baseline justify-between gap-3">
       <span className="text-ink-3">{label}</span>
       <span className="text-right">{children}</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Согласование вакансии (фишка 26).
+// Задача владельца дословно: «утвердить открытие вакансии, вилку и приоритет».
+// Видно, кто и когда согласовал — это снимает вопрос «а мы это утверждали?».
+// ---------------------------------------------------------------------------
+function ApprovalTab({ vacancyId }: { vacancyId: string }) {
+  const { can } = useAuth();
+  const approvals = useAsync(() => api.listApprovals(vacancyId), [vacancyId]);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (approvals.loading) return <Skeleton className="h-40 w-full" />;
+  const list = approvals.data ?? [];
+
+  if (list.length === 0) {
+    return (
+      <EmptyState
+        title="Согласование не запрашивалось"
+        description="Вакансия открыта без утверждения вилки. Это работает ровно до первого оффера выше бюджета."
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {list.map((a) => (
+        <Card key={a.id} className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <b className="text-[14px]">{a.approver_name}</b>
+              <div className="mt-[2px] text-[12.5px] text-ink-3">
+                запрошено {dateRu(a.created_at)}
+                {a.decided_at ? ` · решение ${dateRu(a.decided_at)}` : ""}
+              </div>
+            </div>
+            <Tag
+              tone={
+                a.decision === "approved" ? "good" : a.decision === "rejected" ? "crit" : "warn"
+              }
+            >
+              {a.decision === "approved"
+                ? "Согласовано"
+                : a.decision === "rejected"
+                  ? "Отклонено"
+                  : "Ждёт решения"}
+            </Tag>
+          </div>
+
+          {a.comment && <p className="m-0 text-[13.5px] text-ink-2">{a.comment}</p>}
+
+          {a.decision === "pending" && can("director", "superuser") && (
+            <div className="flex flex-col gap-2 border-t border-border pt-3">
+              <Textarea
+                placeholder="Комментарий к решению — что именно утверждаете или что смущает"
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                className="min-h-[56px]"
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    await api.decideApproval(a.id, "approved", comment);
+                    setBusy(false);
+                    approvals.reload();
+                  }}
+                >
+                  Согласовать
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    await api.decideApproval(a.id, "rejected", comment);
+                    setBusy(false);
+                    approvals.reload();
+                  }}
+                >
+                  Вернуть на доработку
+                </Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Версии требований (фишка 27).
+// «Требования меняются на ходу, работа обесценивается» — боль HR.
+// Здесь видно, что именно поменялось, кто и когда.
+// ---------------------------------------------------------------------------
+function VersionsTab({ vacancyId }: { vacancyId: string }) {
+  const versions = useAsync(() => api.listVersions(vacancyId), [vacancyId]);
+  if (versions.loading) return <Skeleton className="h-40 w-full" />;
+  const list = versions.data ?? [];
+
+  if (list.length === 0) {
+    return (
+      <EmptyState
+        title="Требования не менялись"
+        description="Как только кто-то поправит критерии или вилку, здесь появится запись — что было, что стало и по чьей просьбе."
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="m-0 max-w-[64ch] text-[13.5px] text-ink-2">
+        Если требования поменяли посреди отбора, часть уже отсмотренных
+        кандидатов оценивалась по другим правилам. Это видно здесь, а не
+        выясняется на разборе провалившегося найма.
+      </p>
+
+      {list.map((v) => (
+        <Card key={v.id} className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <b className="font-mono text-[13px]">Версия {v.version_no}</b>
+              <div className="mt-[2px] text-[12.5px] text-ink-3">
+                {v.changed_by_name} · {dateRu(v.created_at)}
+              </div>
+            </div>
+            {v.version_no === list[0].version_no && <Tag tone="good">Действует</Tag>}
+          </div>
+
+          {v.change_note && <p className="m-0 text-[13.5px] text-ink-2">{v.change_note}</p>}
+
+          {v.changes.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {v.changes.map((c, i) => (
+                <div key={i} className="flex flex-wrap items-baseline gap-2 text-[13px]">
+                  <span className="font-medium">{c.field}:</span>
+                  <span className="text-ink-3 line-through">{c.from}</span>
+                  <span className="text-ink-3">→</span>
+                  <span className="font-medium text-ink">{c.to}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Вопросы и оценочная форма под роль (фишка 28).
+// «Не знает, какие вопросы задавать для проверки компетенций» — боль
+// руководителя подразделения. Вопросы строятся из критериев вакансии,
+// поэтому интервью проверяет ровно то, по чему принимается решение.
+// ---------------------------------------------------------------------------
+function QuestionsTab({ vacancyId }: { vacancyId: string }) {
+  const questions = useAsync(() => api.listQuestions(vacancyId), [vacancyId]);
+  if (questions.loading) return <Skeleton className="h-40 w-full" />;
+  const list = questions.data ?? [];
+
+  if (list.length === 0) {
+    return (
+      <EmptyState
+        title="Вопросы не из чего собрать"
+        description="Сначала задайте критерии вакансии — вопросы строятся из них, а не из общего списка «что спросить на собеседовании»."
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Card className="flex items-start gap-3 border-l-[3px] border-l-primary">
+        <Sparkles className="mt-[2px] h-5 w-5 shrink-0 text-primary" />
+        <p className="m-0 text-[13.5px] text-ink-2">
+          По одному вопросу на критерий. Рядом — что считать хорошим ответом:
+          без этого «понравился» и «не понравился» снова остаются единственными
+          вариантами. Распечатайте или откройте с телефона прямо на интервью.
+        </p>
+      </Card>
+
+      {list.map((q, i) => (
+        <Card key={q.id} className="flex flex-col gap-2">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-3">
+            {i + 1}. Проверяет: {q.criterion_name}
+          </div>
+          <p className="m-0 text-[15px] font-medium leading-snug">{q.question}</p>
+          <div className="rounded-md bg-good-soft p-3">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-good">
+              Что считать хорошим ответом
+            </div>
+            <p className="m-0 text-[12.5px] text-ink-2">{q.good_answer}</p>
+          </div>
+        </Card>
+      ))}
     </div>
   );
 }

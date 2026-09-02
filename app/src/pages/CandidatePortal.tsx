@@ -1,10 +1,12 @@
-import { Check, Circle, Clock, Download, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Check, Circle, Clock, Download, ShieldOff, Trash2 } from "lucide-react";
 import * as api from "@/lib/api";
 import { useAsync } from "@/hooks/useAsync";
 import { useAuth } from "@/hooks/useAuth";
-import { Button, Card, Skeleton, Tag } from "@/components/ui";
+import { Button, Card, Modal, Skeleton, Tag } from "@/components/ui";
 import { EmptyState, PageHeader } from "@/components/app/primitives";
-import { DOCUMENT_LABEL } from "@/lib/types";
+import { CONSENT_LABEL, DOCUMENT_LABEL } from "@/lib/types";
+import { SelfBooking } from "./Calendar";
 import { cn, dateRu, dateTimeRu } from "@/lib/utils";
 
 /**
@@ -112,6 +114,11 @@ export default function MyStatus() {
                     );
                   })}
                 </ol>
+
+                {/* Кандидат выбирает время сам: вечерние окна и онлайн есть.
+                    Это снимает и его боль «непрозрачный процесс», и главный
+                    пожиратель времени HR — переписку о слотах. */}
+                <SelfBooking applicationId={a.id} vacancyId={a.vacancy_id} />
               </Card>
             );
           })}
@@ -139,7 +146,7 @@ export function MyDocuments() {
   return (
     <>
       <PageHeader
-        eyebrow="Допуск к работе с детьми"
+        eyebrow="Документы для оформления"
         title="Мои документы"
         description="Что уже принято, а что нужно донести. Файлы можно прислать прямо в чат бота — сюда заходить не обязательно."
       />
@@ -149,7 +156,7 @@ export function MyDocuments() {
       ) : (docs.data ?? []).length === 0 ? (
         <EmptyState
           title="Пока ничего не загружено"
-          description="Нужны справка об отсутствии судимости и медкнижка. Без них к детям не допустят — это закон, а не наше требование."
+          description="Обычно это паспорт, СНИЛС и ИНН, иногда — проверка службой безопасности. Точный список зависит от вакансии, и без него оформление не начнётся."
         />
       ) : (
         <Card className="mb-6 flex flex-col gap-3">
@@ -176,27 +183,126 @@ export function MyDocuments() {
         </Card>
       )}
 
-      <section>
-        <h2 className="mb-3 font-display text-[19px] font-semibold tracking-[-0.01em]">
-          Ваши данные
-        </h2>
-        <Card className="flex flex-col gap-4">
-          <p className="m-0 text-[13.5px] text-ink-2">
-            Мы храним ваше резюме, переписку и результаты заданий, чтобы вернуться
-            к вам, когда появится подходящая вакансия. Согласие можно отозвать
-            в любой момент — это не повлияет на текущий отбор.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" size="sm">
-              <Download className="h-4 w-4" /> Скачать мои данные
-            </Button>
-            <Button variant="ghost" size="sm">Отозвать согласие</Button>
-            <Button variant="danger" size="sm">
-              <Trash2 className="h-4 w-4" /> Удалить мои данные
-            </Button>
-          </div>
-        </Card>
-      </section>
+      <MyData candidateId={me?.id ?? null} />
     </>
+  );
+}
+
+/**
+ * Права на свои данные (фишки 61, 62).
+ *
+ * Кнопки живые, а не декоративные: без права на забвение базу нельзя ни
+ * хранить, ни монетизировать. Отзыв согласия на запись созвонов отдельно
+ * от согласия на обработку — это разные вещи, и путать их нельзя.
+ */
+function MyData({ candidateId }: { candidateId: string | null }) {
+  const consents = useAsync(
+    () => (candidateId ? api.listConsents(candidateId) : Promise.resolve([])),
+    [candidateId],
+  );
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleted, setDeleted] = useState(false);
+
+  const list = consents.data ?? [];
+
+  return (
+    <section>
+      <h2 className="mb-3 font-display text-[19px] font-semibold tracking-[-0.01em]">
+        Ваши данные
+      </h2>
+
+      <Card className="flex flex-col gap-4">
+        <p className="m-0 text-[13.5px] text-ink-2">
+          Мы храним ваше резюме, переписку и результаты заданий, чтобы вернуться
+          к вам, когда появится подходящая вакансия. Любое согласие можно
+          отозвать — на текущий отбор это не повлияет.
+        </p>
+
+        {consents.loading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : list.length === 0 ? (
+          <p className="m-0 text-[13px] text-ink-3">Согласий пока не зафиксировано.</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {list.map((c) => (
+              <div
+                key={c.id}
+                className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3 last:border-0 last:pb-0"
+              >
+                <div>
+                  <div className="text-[13.5px] font-medium">{CONSENT_LABEL[c.kind]}</div>
+                  <div className="font-mono text-[11.5px] text-ink-3">
+                    {c.granted_at ? `дано ${dateRu(c.granted_at)}` : "не давали"}
+                    {c.revoked_at ? ` · отозвано ${dateRu(c.revoked_at)}` : ""}
+                  </div>
+                </div>
+                {c.revoked_at ? (
+                  <Tag tone="mute">Отозвано</Tag>
+                ) : c.granted_at ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      await api.revokeConsent(c.id);
+                      consents.reload();
+                    }}
+                  >
+                    <ShieldOff className="h-4 w-4" /> Отозвать
+                  </Button>
+                ) : (
+                  <Tag tone="mute">Не дано</Tag>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+          <Button variant="secondary" size="sm">
+            <Download className="h-4 w-4" /> Скачать мои данные
+          </Button>
+          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+            <Trash2 className="h-4 w-4" /> Удалить мои данные
+          </Button>
+        </div>
+
+        {deleted && (
+          <Tag tone="good">
+            Запрос принят. Данные удалим в течение 30 дней и пришлём подтверждение.
+          </Tag>
+        )}
+      </Card>
+
+      <Modal
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        title="Удалить ваши данные?"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setConfirmDelete(false)}>
+              Отмена
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={async () => {
+                if (candidateId) await api.requestDeletion(candidateId);
+                setConfirmDelete(false);
+                setDeleted(true);
+                consents.reload();
+              }}
+            >
+              Да, удалить
+            </Button>
+          </>
+        }
+      >
+        <p className="m-0 text-sm text-ink-2">
+          Удалим резюме, переписку и результаты заданий. Текущий отбор при этом
+          прекратится — продолжить его будет не по чему. Если вы просто не хотите
+          получать сообщения, достаточно отозвать согласие на рассылки.
+        </p>
+      </Modal>
+    </section>
   );
 }

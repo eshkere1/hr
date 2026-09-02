@@ -6,20 +6,21 @@ import {
   Button, Card, Input, Skeleton, Table, TableWrap, Tag, Td, Th,
 } from "@/components/ui";
 import { CandidateLine, EmptyState, PageHeader } from "@/components/app/primitives";
+import { describeQuery, parseQuery } from "@/lib/matching";
 import { daysSince, daysWord } from "@/lib/utils";
 
 /**
- * База педагогов.
+ * База кандидатов.
  *
  * Ради этого экрана всё и затевалось: «нет своей базы резюме, чтобы в любой
  * момент позвонить и пригласить человека». Поиск — на обычном языке,
  * а не набор фильтров: HR не должна собирать boolean-запрос.
  */
 const EXAMPLES = [
-  "математика Краснодар",
-  "программирование",
-  "начальная школа",
-  "физика ЕГЭ",
+  "python из Москвы",
+  "продажи B2B",
+  "аналитик, опыт от 5 лет",
+  "готов выйти срочно",
 ];
 
 export default function Candidates() {
@@ -29,11 +30,15 @@ export default function Candidates() {
 
   const list = candidates.data ?? [];
 
+  // Что система поняла из фразы. Поиск без объяснения — чёрный ящик:
+  // непонятно, пусто из-за отсутствия людей или из-за непонятого слова.
+  const understood = applied.trim() ? describeQuery(parseQuery(applied)) : [];
+
   return (
     <>
       <PageHeader
         eyebrow="Наши данные, не hh"
-        title="База педагогов"
+        title="База кандидатов"
         description="Все, кто когда-либо к нам приходил, с историей общения и причиной прошлого отказа. Отсюда закрывается вакансия без публикации."
       />
 
@@ -50,7 +55,7 @@ export default function Candidates() {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Например: математика, 5–9 класс, Краснодар"
+              placeholder="Например: опытный python, Москва, готов удалённо"
               aria-label="Поиск по базе"
               className="pl-9"
             />
@@ -81,22 +86,42 @@ export default function Candidates() {
       ) : list.length === 0 ? (
         <EmptyState
           title="По этому запросу никого нет"
-          description="Попробуйте назвать предмет или город отдельным словом — поиск смотрит и в резюме тоже."
+          description={
+            understood.length
+              ? `Искали по условиям: ${understood.join("; ")}. Попробуйте убрать одно из них — например, город.`
+              : "Попробуйте назвать предмет или город отдельным словом — поиск смотрит и в резюме тоже."
+          }
         />
       ) : (
         <>
-          <div className="mb-2 text-[12.5px] text-ink-3">
-            Найдено: <span className="font-mono tabular-nums">{list.length}</span>
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
+            <span>
+              Найдено: <span className="font-mono tabular-nums">{list.length}</span>
+            </span>
+            {understood.length > 0 && (
+              <>
+                <span>· поняли так:</span>
+                {understood.map((u) => (
+                  <span
+                    key={u}
+                    className="rounded-sm border border-border bg-surface-2 px-2 py-[1px] text-ink-2"
+                  >
+                    {u}
+                  </span>
+                ))}
+              </>
+            )}
           </div>
           <TableWrap>
-            <Table className="min-w-[760px]">
+            <Table className="min-w-[900px]">
               <thead>
                 <tr>
-                  <Th>Педагог</Th>
-                  <Th>Предметы</Th>
+                  <Th>Кандидат</Th>
+                  <Th>Направление</Th>
+                  <Th>Навыки</Th>
                   <Th>Город</Th>
-                  <Th className="text-right">Опыт</Th>
-                  <Th className="text-right">С детьми</Th>
+                  <Th className="text-right">Всего опыт</Th>
+                  <Th className="text-right">В направлении</Th>
                   <Th>Активность</Th>
                 </tr>
               </thead>
@@ -115,18 +140,21 @@ export default function Candidates() {
                         <Tag tone="info" className="mt-1">Скрыт от работодателя</Tag>
                       )}
                     </Td>
-                    <Td className="text-ink-2">{c.teacher?.subjects.join(", ") ?? "—"}</Td>
+                    <Td className="text-ink-2">{c.profile?.specialization ?? "—"}</Td>
+                    <Td className="text-ink-2">{c.profile?.skills.join(", ") ?? "—"}</Td>
                     <Td className="text-ink-2">{c.city ?? "—"}</Td>
                     <Td className="text-right font-mono tabular-nums">
-                      {c.teacher?.total_experience_years ?? "—"}
+                      {c.profile?.total_experience_years ?? "—"}
                     </Td>
                     <Td className="text-right font-mono tabular-nums">
-                      {c.teacher?.years_with_children ?? "—"}
+                      {c.profile?.years_in_specialty ?? "—"}
                     </Td>
                     <Td className="text-[12.5px] text-ink-3">
-                      {c.last_activity_at
-                        ? `${daysSince(c.last_activity_at)} ${daysWord(daysSince(c.last_activity_at))} назад`
-                        : "—"}
+                      {!c.last_activity_at
+                        ? "—"
+                        : daysSince(c.last_activity_at) === 0
+                          ? "сегодня"
+                          : `${daysSince(c.last_activity_at)} ${daysWord(daysSince(c.last_activity_at))} назад`}
                     </Td>
                   </tr>
                 ))}

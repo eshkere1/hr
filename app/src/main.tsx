@@ -7,7 +7,10 @@ import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    {/* На GitHub Pages сайт живёт в подпапке /hr/, локально — в корне.
+        BASE_URL подставляет Vite, поэтому один и тот же код работает и там,
+        и там: править адрес руками перед выкладкой не нужно. */}
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AuthProvider>
         <App />
       </AuthProvider>
