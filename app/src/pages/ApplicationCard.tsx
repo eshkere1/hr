@@ -5,6 +5,7 @@ import {
   AlertTriangle, Ban, BellRing,
 } from "lucide-react";
 import * as api from "@/lib/api";
+import { CandidateChat } from "@/components/app/Chat";
 import { useAsync } from "@/hooks/useAsync";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -226,7 +227,7 @@ export default function ApplicationCard() {
                 applicationId={app.id}
               />
             )}
-            {tab === "chat" && <ChatTab candidateId={app.candidate_id} />}
+            {tab === "chat" && <CandidateChat candidateId={app.candidate_id} />}
             {tab === "assessment" && <AssessmentTab applicationId={app.id} />}
             {tab === "calls" && (
               <CallsTab applicationId={app.id} vacancyId={app.vacancy_id} />
@@ -423,65 +424,6 @@ function ProfileTab({
           </div>
         </section>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Переписка
-// ---------------------------------------------------------------------------
-function ChatTab({ candidateId }: { candidateId: string }) {
-  const conversations = useAsync(() => api.listConversations(), []);
-  const cv = (conversations.data ?? []).find((c) => c.candidate_id === candidateId);
-  const messages = useAsync(
-    () => (cv ? api.listMessages(cv.id) : Promise.resolve([])),
-    [cv?.id],
-  );
-
-  if (conversations.loading) return <Skeleton className="h-64 w-full" />;
-  if (!cv) {
-    return (
-      <Card>
-        <p className="m-0 text-[13.5px] text-ink-2">
-          Переписки ещё нет. Она начнётся, как только кандидат напишет боту.
-        </p>
-      </Card>
-    );
-  }
-
-  return (
-    <div className="flex max-w-[560px] flex-col gap-[9px] rounded-lg border border-border bg-surface-2 p-4">
-      {(messages.data ?? []).map((m) => (
-        <Bubble key={m.id} message={m} />
-      ))}
-    </div>
-  );
-}
-
-/**
- * Три вида пузырей. Сообщение ассистента помечено пунктиром и подписью:
- * человек всегда должен понимать, с кем говорит.
- */
-function Bubble({ message }: { message: { author_kind: string; body: string; sent_at: string; author_name: string | null } }) {
-  const isAi = message.author_kind === "ai_assistant";
-  const isOut = message.author_kind !== "candidate";
-
-  return (
-    <div
-      className={cn(
-        "max-w-[82%] rounded-lg px-[13px] py-[9px] text-[13.5px] leading-snug",
-        isAi
-          ? "self-start rounded-bl-sm border border-dashed border-primary bg-primary-soft text-ink"
-          : isOut
-            ? "self-end rounded-br-sm bg-primary text-primary-foreground"
-            : "self-start rounded-bl-sm border border-border bg-surface",
-      )}
-    >
-      {message.body}
-      <time className={cn("mt-1 block font-mono text-[10.5px]", isOut && !isAi ? "text-primary-soft" : "text-ink-3")}>
-        {isAi ? "ассистент · " : message.author_name ? `${message.author_name} · ` : ""}
-        {dateTimeRu(message.sent_at)}
-      </time>
     </div>
   );
 }

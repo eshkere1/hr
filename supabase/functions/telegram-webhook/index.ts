@@ -1,24 +1,20 @@
 /**
  * telegram-webhook — входящая сторона переписки (фишки 11, 12).
  *
- * Телеграм присылает сюда каждое сообщение кандидата. Функция находит
- * человека по telegram_user_id, при первом контакте заводит карточку и
- * кладёт сообщение в messages. Счётчик непрочитанного и last_message_at
- * поднимает триггер on_message_inserted — здесь их трогать не нужно.
+ * Ботов может быть много: разные бренды, разные регионы, массовый подбор
+ * отдельно от точечного. Поэтому адрес несёт в себе, кто именно принимает:
  *
- * ТОКЕНА БОТА В КОДЕ НЕТ И БЫТЬ НЕ ДОЛЖНО. Он приходит из секретов проекта:
- *   supabase secrets set TELEGRAM_BOT_TOKEN=...
- *   supabase secrets set TELEGRAM_WEBHOOK_SECRET=...
+ *   /functions/v1/telegram-webhook/<id бота>
  *
- * Регистрация адреса у Телеграма (secret_token обязателен — иначе на этот
- * URL сможет постучаться кто угодно и наплодить фальшивых кандидатов):
- *   curl "https://api.telegram.org/bot<ТОКЕН>/setWebhook" \
- *     -d "url=https://<проект>.supabase.co/functions/v1/telegram-webhook" \
- *     -d "secret_token=<ТОТ ЖЕ TELEGRAM_WEBHOOK_SECRET>"
+ * Токен и секрет берутся из строки этого бота в базе, а не из переменных
+ * окружения — иначе добавить второго бота можно было бы только через
+ * переразвёртывание функции.
+ *
+ * Диалог запоминает бота. Отвечать нужно из того же аккаунта, в который
+ * написал человек: ответ «не от того бота» кандидат либо не получит,
+ * либо примет за спам.
  */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "";
 
 // service_role живёт только здесь, на сервере: он обходит RLS, и на клиенте
 // ему не место ни при каких условиях.
@@ -45,10 +41,28 @@ interface TgMessage {
 }
 
 Deno.serve(async (req) => {
-  // Проверка секрета — первое, что происходит. Без неё эндпоинт открыт всему
-  // интернету, а он пишет в базу.
-  if (!WEBHOOK_SECRET ||
-      req.headers.get("x-telegram-bot-api-secret-token") !== WEBHOOK_SECRET) {
+  // 1. Кто принимает. Последний сегмент адреса — id бота.
+  const parts = new URL(req.url).pathname.split("/").filter(Boolean);
+  const botId = parts[parts.length - 1];
+  const looksLikeUuid = /^[0-9a-f-]{36}$/i.test(botId ?? "");
+  if (!looksLikeUuid) {
+    return new Response("bot id missing in path", { status: 404 });
+  }
+
+  const { data: bot } = await supabase
+    .from("messenger_bots")
+    .select("id, token, webhook_secret, is_active")
+    .eq("id", botId)
+    .maybeSingle();
+
+  if (!bot || !bot.is_active) {
+    return new Response("unknown bot", { status: 404 });
+  }
+
+  // 2. Проверка секрета — до любой работы с телом запроса. Без неё адрес
+  //    открыт всему интернету, а он пишет в базу. Секрет у каждого бота
+  //    свой: утечка одного не открывает остальных.
+  if (req.headers.get("x-telegram-bot-api-secret-token") !== bot.webhook_secret) {
     return new Response("forbidden", { status: 403 });
   }
 
@@ -75,7 +89,7 @@ Deno.serve(async (req) => {
       || from.username
       || `Кандидат ${from.id}`;
 
-    // 1. Кандидат. Первое сообщение боту — это и есть отклик «из Телеграма».
+    // 3. Кандидат. Первое сообщение боту — это и есть отклик «из Телеграма».
     let { data: candidate } = await supabase
       .from("candidates")
       .select("id")
@@ -100,12 +114,12 @@ Deno.serve(async (req) => {
       candidate = created;
     }
 
-    // 2. Диалог. Уникальность в схеме — (candidate_id, channel, application_id),
+    // 4. Диалог. Уникальность в схеме — (candidate_id, channel, application_id),
     //    но application_id здесь null, а NULL в Postgres не совпадает сам с
     //    собой. Поэтому ищем явно, а не полагаемся на on conflict.
     let { data: conversation } = await supabase
       .from("conversations")
-      .select("id")
+      .select("id, bot_id")
       .eq("candidate_id", candidate.id)
       .eq("channel", "telegram")
       .is("application_id", null)
@@ -118,14 +132,23 @@ Deno.serve(async (req) => {
           candidate_id: candidate.id,
           channel: "telegram",
           external_chat_id: String(msg.chat.id),
+          bot_id: bot.id,
         })
-        .select("id")
+        .select("id, bot_id")
         .single();
       if (error) throw error;
       conversation = created;
+    } else if (conversation.bot_id !== bot.id) {
+      // Человек написал в другого нашего бота — значит, отвечать теперь
+      // нужно оттуда же. Переписка при этом остаётся одной: она про
+      // человека, а не про канал.
+      await supabase
+        .from("conversations")
+        .update({ bot_id: bot.id, external_chat_id: String(msg.chat.id) })
+        .eq("id", conversation.id);
     }
 
-    // 3. Сообщение. external_message_id защищает от дублей при повторной
+    // 5. Сообщение. external_message_id защищает от дублей при повторной
     //    доставке: Телеграм присылает тот же апдейт, если не получил 200.
     const { error: msgError } = await supabase.from("messages").insert({
       conversation_id: conversation.id,
@@ -138,11 +161,20 @@ Deno.serve(async (req) => {
     });
     if (msgError && msgError.code !== "23505") throw msgError;
 
+    await supabase
+      .from("messenger_bots")
+      .update({ last_seen_at: new Date().toISOString(), last_error: null })
+      .eq("id", bot.id);
+
     return new Response("ok");
   } catch (e) {
-    console.error("telegram-webhook", e);
+    console.error("telegram-webhook", botId, e);
+    await supabase
+      .from("messenger_bots")
+      .update({ last_error: String(e).slice(0, 500) })
+      .eq("id", bot.id);
     // 200 намеренно: на 5xx Телеграм будет повторять доставку по кругу.
-    // Ошибку видно в логах функции, а очередь не встанет.
+    // Ошибка видна в карточке бота и в логах, а очередь не встанет.
     return new Response("ok");
   }
 });

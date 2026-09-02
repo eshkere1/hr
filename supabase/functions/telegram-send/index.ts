@@ -5,22 +5,16 @@
  * единственным источником правды, а доставка — отдельная забота. Эту
  * функцию дёргает Database Webhook на INSERT в messages.
  *
- * Настройка (Dashboard → Database → Webhooks):
+ * Токен берётся у того бота, через которого идёт диалог. Отвечать из
+ * другого аккаунта нельзя: кандидат либо не получит сообщение, либо
+ * получит его от незнакомого бота и примет за спам.
+ *
+ * Настройка (Database → Webhooks):
  *   таблица   messages
  *   событие   INSERT
  *   тип       Supabase Edge Function → telegram-send
- *
- * Секреты:
- *   supabase secrets set TELEGRAM_BOT_TOKEN=...
- *
- * Почему лимит касаний проверяется здесь, а не только в интерфейсе:
- * интерфейс — не граница системы. Сообщение может уйти из скрипта, из
- * автодействия этапа, из будущего ИИ-автопилота. Единственное место, где
- * запрет действительно работает, — точка отправки.
  */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -37,11 +31,6 @@ interface MessageRow {
 }
 
 Deno.serve(async (req) => {
-  if (!BOT_TOKEN) {
-    console.error("telegram-send: TELEGRAM_BOT_TOKEN не задан");
-    return new Response("ok");
-  }
-
   let payload: { type?: string; record?: MessageRow };
   try {
     payload = await req.json();
@@ -57,7 +46,7 @@ Deno.serve(async (req) => {
   try {
     const { data: conv, error } = await supabase
       .from("conversations")
-      .select("id, candidate_id, channel, external_chat_id")
+      .select("id, candidate_id, channel, external_chat_id, bot_id")
       .eq("id", row.conversation_id)
       .single();
     if (error) throw error;
@@ -68,8 +57,24 @@ Deno.serve(async (req) => {
       return new Response("ok");
     }
 
+    // Бот диалога. Если его почему-то нет (диалог завели вручную) — берём
+    // бота по умолчанию: лучше отправить из основного аккаунта, чем
+    // потерять сообщение молча.
+    let botQuery = supabase.from("messenger_bots").select("id, token, name").eq("is_active", true);
+    botQuery = conv.bot_id
+      ? botQuery.eq("id", conv.bot_id)
+      : botQuery.eq("channel", "telegram").eq("is_default", true);
+
+    const { data: bot } = await botQuery.maybeSingle();
+    if (!bot) {
+      console.error("telegram-send: нет бота для диалога", conv.id);
+      return new Response("ok");
+    }
+
     // Антиспам (фишка 41). Считает та же функция в базе, что и интерфейс, —
-    // чтобы правило было одно, а не два расходящихся.
+    // чтобы правило было одно, а не два расходящихся. Проверка стоит здесь,
+    // а не только на экране, потому что интерфейс не граница системы:
+    // сообщение может уйти из автодействия этапа или из будущего автопилота.
     const { data: allowed } = await supabase.rpc("can_touch_candidate", {
       _candidate_id: conv.candidate_id,
     });
@@ -78,7 +83,7 @@ Deno.serve(async (req) => {
       return new Response("ok");
     }
 
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${bot.token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -90,8 +95,14 @@ Deno.serve(async (req) => {
 
     if (!res.ok) {
       // Не бросаем: сообщение в базе уже есть, HR его видит. Молчаливая
-      // потеря хуже, чем запись в логе, по которой видно, что не ушло.
-      console.error("telegram-send: Telegram ответил", res.status, await res.text());
+      // потеря хуже, чем видимая ошибка — записываем её в карточку бота,
+      // чтобы было понятно, почему кандидат не отвечает.
+      const text = await res.text();
+      console.error("telegram-send: Telegram ответил", res.status, text);
+      await supabase
+        .from("messenger_bots")
+        .update({ last_error: `${res.status}: ${text}`.slice(0, 500) })
+        .eq("id", bot.id);
       return new Response("ok");
     }
 
@@ -100,6 +111,11 @@ Deno.serve(async (req) => {
       .from("messages")
       .update({ external_message_id: `tg:${conv.external_chat_id}:${sent.result?.message_id}` })
       .eq("id", row.id);
+
+    await supabase
+      .from("messenger_bots")
+      .update({ last_seen_at: new Date().toISOString(), last_error: null })
+      .eq("id", bot.id);
 
     return new Response("ok");
   } catch (e) {

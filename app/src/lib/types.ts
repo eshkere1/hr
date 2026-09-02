@@ -305,6 +305,36 @@ export interface Conversation {
   last_message_at: string | null;
   unread_for_staff: number;
   is_ai_autopilot: boolean;
+  /** Через какого бота идёт диалог: отвечать нужно из того же аккаунта. */
+  bot_id: string | null;
+  bot_name: string | null;
+  /** Начало последнего сообщения — для списка диалогов. */
+  preview: string | null;
+  preview_incoming: boolean;
+}
+
+/**
+ * Бот-мессенджер. Их несколько: разные бренды, регионы, кампании — у
+ * каждого свой аккаунт в Телеграме и свой тон.
+ *
+ * Токена здесь нет и быть не может: он живёт в базе под RLS и наружу
+ * не отдаётся. token_hint — последние символы, чтобы человек узнал свой
+ * бот в списке и не перепутал два похожих.
+ */
+export interface MessengerBot {
+  id: string;
+  channel: string;
+  name: string;
+  username: string | null;
+  department_id: string | null;
+  department_name: string | null;
+  is_active: boolean;
+  is_default: boolean;
+  last_error: string | null;
+  last_seen_at: string | null;
+  token_hint: string;
+  conversations_count: number;
+  created_at: string;
 }
 
 export interface Message {

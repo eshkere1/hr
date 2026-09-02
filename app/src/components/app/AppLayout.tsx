@@ -4,7 +4,7 @@ import {
   LayoutGrid, Briefcase, Users, MessageSquare, FileCheck, BarChart3,
   ClipboardList, CalendarClock, GraduationCap, ShieldCheck, LogOut,
   Columns3, Archive as ArchiveIcon, FileSignature, CalendarDays, SlidersHorizontal,
-  Menu as MenuIcon, X, UserCircle, Sun, PanelLeftClose, PanelLeftOpen,
+  Menu as MenuIcon, X, UserCircle, Sun, PanelLeftClose, PanelLeftOpen, Bot,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
@@ -40,7 +40,7 @@ const GROUPS: MenuGroup[] = [
     items: [
       { to: "/today", label: "Мой день", icon: Sun, roles: ["hr_manager", "superuser"] },
       { to: "/waiting", label: "Ждут меня", icon: CalendarClock, roles: ["dept_head", "line_manager"] },
-      { to: "/inbox", label: "Переписка", icon: MessageSquare, roles: ["hr_manager", "superuser"] },
+      { to: "/inbox", label: "Мессенджер", icon: MessageSquare, roles: ["hr_manager", "superuser"] },
       { to: "/dashboard", label: "Дашборд", icon: LayoutGrid, roles: ["director"] },
     ],
   },
@@ -76,6 +76,7 @@ const GROUPS: MenuGroup[] = [
     title: "Настройка",
     items: [
       { to: "/settings", label: "Ценности и данные", icon: SlidersHorizontal, roles: ["hr_manager", "director", "superuser"] },
+      { to: "/bots", label: "Боты", icon: Bot, roles: ["superuser"] },
       { to: "/admin", label: "Пользователи и роли", icon: ShieldCheck, roles: ["superuser"] },
     ],
   },

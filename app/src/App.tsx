@@ -11,6 +11,7 @@ import ApplicationCard from "@/pages/ApplicationCard";
 import Vacancies, { VacancyCard } from "@/pages/Vacancies";
 import Candidates from "@/pages/Candidates";
 import Inbox from "@/pages/Inbox";
+import Bots from "@/pages/Bots";
 import Documents from "@/pages/Documents";
 import WaitingForMe from "@/pages/WaitingForMe";
 import Requisitions, { RequisitionNew } from "@/pages/Requisitions";
@@ -160,6 +161,14 @@ export default function App() {
           element={
             <RoleGate roles={["hr_manager", "director", "superuser"]}>
               <Candidates />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/bots"
+          element={
+            <RoleGate roles={["superuser"]}>
+              <Bots />
             </RoleGate>
           }
         />

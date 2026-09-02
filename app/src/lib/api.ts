@@ -17,8 +17,8 @@ import { DOCUMENT_LABEL } from "./types";
 import type {
   AppRole, Application, ArchiveMatch, Assessment, Candidate, CandidateDocument,
   CompanyValue, Consent, Conversation, CriteriaResult, CriterionResult,
-  DashboardStats, DocumentKind, FunnelRow, Interview, InterviewSlot, Message,
-  Note, Offer, OfferStatus, PipelineStage, PracticalCheck, Profile, Referral,
+  DashboardStats, DocumentKind, FunnelRow, Interview, InterviewSlot, MessengerBot,
+  Message, Note, Offer, OfferStatus, PipelineStage, PracticalCheck, Profile, Referral,
   RejectionReason, Requisition, SalaryGap, SlaBreach, TeamOpinion, UrgentNeed, Vacancy,
   VacancyApproval, VacancyCriterion, VacancyVersion, WorkFormat,
 } from "./types";
@@ -388,19 +388,33 @@ let demoMessages: Message[] = [...demo.messages];
 
 export async function listConversations(): Promise<Conversation[]> {
   if (isDemoMode) {
-    return [...demo.conversations].sort(
-      (a, b) => (b.last_message_at ?? "").localeCompare(a.last_message_at ?? ""),
-    );
+    return [...demo.conversations]
+      .map((c) => {
+        // Превью считаем на месте, а не храним: иначе оно разъезжается
+        // с перепиской после первой же отправки.
+        const last = demoMessages
+          .filter((m) => m.conversation_id === c.id)
+          .sort((a, b) => a.sent_at.localeCompare(b.sent_at))
+          .slice(-1)[0];
+        return {
+          ...c,
+          preview: last?.body ?? null,
+          preview_incoming: last?.author_kind === "candidate",
+        };
+      })
+      .sort((a, b) => (b.last_message_at ?? "").localeCompare(a.last_message_at ?? ""));
   }
   const { data, error } = await db()
     .from("conversations")
     .select(`
       id, candidate_id, application_id, channel, last_message_at,
-      unread_for_staff, is_ai_autopilot,
-      candidates ( full_name ), applications ( vacancies ( title ) )
+      unread_for_staff, is_ai_autopilot, bot_id,
+      candidates ( full_name ),
+      applications ( vacancies ( title ) ),
+      messenger_bots ( name )
     `)
     .order("last_message_at", { ascending: false })
-    .limit(100);
+    .limit(300);
   if (error) throw error;
   return (data ?? []).map((c: any) => ({
     id: c.id, candidate_id: c.candidate_id,
@@ -409,7 +423,97 @@ export async function listConversations(): Promise<Conversation[]> {
     vacancy_title: c.applications?.vacancies?.title ?? null,
     channel: c.channel, last_message_at: c.last_message_at,
     unread_for_staff: c.unread_for_staff, is_ai_autopilot: c.is_ai_autopilot,
+    bot_id: c.bot_id ?? null,
+    bot_name: c.messenger_bots?.name ?? null,
+    // Последнее сообщение подтягиваем отдельным запросом ниже: тащить его
+    // джойном на каждый диалог дороже, чем один запрос на всю страницу.
+    preview: null,
+    preview_incoming: false,
   }));
+}
+
+/**
+ * Последнее сообщение в каждом диалоге — для списка.
+ *
+ * Отдельным запросом намеренно: связанная выборка вернула бы все сообщения
+ * всех диалогов ради одной строки на каждый. Здесь мы берём свежие сообщения
+ * пачкой и раскладываем по диалогам уже на клиенте.
+ */
+export async function attachPreviews(list: Conversation[]): Promise<Conversation[]> {
+  if (isDemoMode || list.length === 0) return list;
+
+  const { data } = await db()
+    .from("messages")
+    .select("conversation_id, body, author_kind, sent_at")
+    .in("conversation_id", list.map((c) => c.id))
+    .order("sent_at", { ascending: false })
+    .limit(1000);
+
+  const seen = new Map<string, { body: string | null; author_kind: string }>();
+  for (const m of data ?? []) {
+    if (!seen.has(m.conversation_id)) seen.set(m.conversation_id, m as any);
+  }
+  return list.map((c) => {
+    const last = seen.get(c.id);
+    return {
+      ...c,
+      preview: last?.body ?? null,
+      preview_incoming: last?.author_kind === "candidate",
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// БОТЫ
+//
+// Токен сюда не приходит и отсюда не уходит: он живёт в базе под RLS.
+// Добавление и удаление идут через серверную функцию, потому что она
+// заодно разговаривает с Телеграмом — регистрирует адрес и проверяет,
+// что токен живой.
+// ---------------------------------------------------------------------------
+export async function listBots(): Promise<MessengerBot[]> {
+  if (isDemoMode) return [...demo.messengerBots];
+  const { data, error } = await db()
+    .from("v_messenger_bots")
+    .select("*")
+    .order("is_default", { ascending: false })
+    .order("created_at");
+  if (error) throw error;
+  return (data ?? []) as MessengerBot[];
+}
+
+async function callBotFunction(body: Record<string, unknown>) {
+  const { data, error } = await db().functions.invoke("bot-register", { body });
+  if (error) {
+    // Ошибку функции показываем словами: «не удалось» без причины
+    // заставляет гадать, а гадать тут не о чем — Телеграм всегда объясняет.
+    const detail = (data as any)?.error ?? error.message;
+    throw new Error(detail);
+  }
+  if ((data as any)?.error) throw new Error((data as any).error);
+  return data as any;
+}
+
+export async function addBot(token: string, name: string) {
+  if (isDemoMode) {
+    throw new Error(
+      "В демо-режиме бота не подключить: нужен настоящий токен и база. Заполните .env и повторите.",
+    );
+  }
+  return callBotFunction({ action: "add", token, name });
+}
+
+export async function removeBot(botId: string) {
+  if (isDemoMode) {
+    demo.messengerBots.splice(demo.messengerBots.findIndex((b) => b.id === botId), 1);
+    return;
+  }
+  await callBotFunction({ action: "remove", bot_id: botId });
+}
+
+export async function recheckBot(botId: string) {
+  if (isDemoMode) return { ok: true, pending: 0, error: null };
+  return callBotFunction({ action: "recheck", bot_id: botId });
 }
 
 export async function listMessages(conversationId: string): Promise<Message[]> {

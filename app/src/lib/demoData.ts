@@ -41,6 +41,7 @@ import type {
   VacancyApproval,
   VacancyCriterion,
   VacancyVersion,
+  MessengerBot,
 } from "./types";
 
 const H = 3600_000;
@@ -477,12 +478,32 @@ export const rejectionReasons: RejectionReason[] = [
 // ---------------------------------------------------------------------------
 // Переписка. Кандидат живёт в Телеграме и на сайт не заходит.
 // ---------------------------------------------------------------------------
+/**
+ * Боты. Их несколько намеренно: массовый подбор говорит не тем тоном, что
+ * точечный, и живёт в отдельном аккаунте. Токенов здесь нет — в демо-режиме
+ * их неоткуда взять, а в живом они не покидают базу.
+ */
+export const messengerBots: MessengerBot[] = [
+  {
+    id: "bot-1", channel: "telegram", name: "Растим · Найм", username: "rastim_hr_bot",
+    department_id: null, department_name: null, is_active: true, is_default: true,
+    last_error: null, last_seen_at: hoursAgo(2), token_hint: "…J4kQw1",
+    conversations_count: 4, created_at: daysAgo(40),
+  },
+  {
+    id: "bot-2", channel: "telegram", name: "Массовый подбор", username: "rastim_mass_bot",
+    department_id: null, department_name: "Поддержка", is_active: true, is_default: false,
+    last_error: null, last_seen_at: hoursAgo(9), token_hint: "…Zp0Lm7",
+    conversations_count: 1, created_at: daysAgo(12),
+  },
+];
+
 export const conversations: Conversation[] = [
-  { id: "cv1", candidate_id: "k1", candidate_name: "Ирина Ковалёва", application_id: "a1", vacancy_title: "Backend-разработчик", channel: "telegram", last_message_at: hoursAgo(2), unread_for_staff: 1, is_ai_autopilot: false },
-  { id: "cv2", candidate_id: "k2", candidate_name: "Пётр Соколов", application_id: "a2", vacancy_title: "Backend-разработчик", channel: "telegram", last_message_at: hoursAgo(26), unread_for_staff: 2, is_ai_autopilot: false },
-  { id: "cv3", candidate_id: "k7", candidate_name: "Никита Осипов", application_id: "a14", vacancy_title: "Аналитик данных", channel: "telegram", last_message_at: hoursAgo(9), unread_for_staff: 0, is_ai_autopilot: true },
-  { id: "cv4", candidate_id: "k6", candidate_name: "Дарья Плотникова", application_id: "a11", vacancy_title: "Менеджер по продажам", channel: "telegram", last_message_at: daysAgo(3), unread_for_staff: 0, is_ai_autopilot: false },
-  { id: "cv5", candidate_id: "k10", candidate_name: "Ксения Романова", application_id: "a4", vacancy_title: "Backend-разработчик", channel: "telegram", last_message_at: hoursAgo(30), unread_for_staff: 1, is_ai_autopilot: true },
+  { id: "cv1", candidate_id: "k1", candidate_name: "Ирина Ковалёва", application_id: "a1", vacancy_title: "Backend-разработчик", channel: "telegram", last_message_at: hoursAgo(2), unread_for_staff: 1, is_ai_autopilot: false , bot_id: "bot-1", bot_name: "Растим · Найм", preview: null, preview_incoming: false },
+  { id: "cv2", candidate_id: "k2", candidate_name: "Пётр Соколов", application_id: "a2", vacancy_title: "Backend-разработчик", channel: "telegram", last_message_at: hoursAgo(26), unread_for_staff: 2, is_ai_autopilot: false , bot_id: "bot-1", bot_name: "Растим · Найм", preview: null, preview_incoming: false },
+  { id: "cv3", candidate_id: "k7", candidate_name: "Никита Осипов", application_id: "a14", vacancy_title: "Аналитик данных", channel: "telegram", last_message_at: hoursAgo(9), unread_for_staff: 0, is_ai_autopilot: true , bot_id: "bot-1", bot_name: "Растим · Найм", preview: null, preview_incoming: false },
+  { id: "cv4", candidate_id: "k6", candidate_name: "Дарья Плотникова", application_id: "a11", vacancy_title: "Менеджер по продажам", channel: "telegram", last_message_at: daysAgo(3), unread_for_staff: 0, is_ai_autopilot: false , bot_id: "bot-1", bot_name: "Растим · Найм", preview: null, preview_incoming: false },
+  { id: "cv5", candidate_id: "k10", candidate_name: "Ксения Романова", application_id: "a4", vacancy_title: "Backend-разработчик", channel: "telegram", last_message_at: hoursAgo(30), unread_for_staff: 1, is_ai_autopilot: true , bot_id: "bot-1", bot_name: "Растим · Найм", preview: null, preview_incoming: false },
 ];
 
 export const messages: Message[] = [
@@ -990,6 +1011,10 @@ applications
       last_message_at: hoursAgo(Math.floor(rnd() * 90)),
       unread_for_staff: unread,
       is_ai_autopilot: rnd() < 0.3,
+      bot_id: bulkConvNo % 3 === 0 ? "bot-2" : "bot-1",
+      bot_name: bulkConvNo % 3 === 0 ? "Массовый подбор" : "Растим · Найм",
+      preview: null,
+      preview_incoming: false,
     });
     messages.push({
       id: `gm${bulkConvNo}a`,
