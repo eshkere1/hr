@@ -132,6 +132,24 @@ async function add(token?: string, name?: string, userId?: string) {
   });
   const setResult = await res.json();
 
+  // Меню команд в самом Телеграме: кандидат видит кнопку со списком и не
+  // должен угадывать, что боту можно написать.
+  await fetch(`https://api.telegram.org/bot${clean}/setMyCommands`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      commands: [
+        { command: "status", description: "Где мой отклик сейчас" },
+        { command: "vacancies", description: "Открытые вакансии" },
+        { command: "slots", description: "Записаться на встречу" },
+        { command: "test", description: "Задание" },
+        { command: "docs", description: "Какие документы нужны" },
+        { command: "privacy", description: "Мои данные и согласие" },
+        { command: "help", description: "Что я умею" },
+      ],
+    }),
+  }).catch(() => {/* меню — приятная мелочь, из-за неё подключение не валим */});
+
   if (!setResult.ok) {
     // Бот в базе есть, но сообщения до нас не дойдут. Не молчим и не
     // удаляем строку втихую: пишем причину в карточку, человек увидит её

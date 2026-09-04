@@ -28,6 +28,7 @@ interface MessageRow {
   direction: string;
   author_kind: string;
   body: string | null;
+  external_message_id: string | null;
 }
 
 Deno.serve(async (req) => {
@@ -40,6 +41,13 @@ Deno.serve(async (req) => {
 
   const row = payload.record;
   if (payload.type !== "INSERT" || !row || row.direction !== "outbound" || !row.body) {
+    return new Response("ok");
+  }
+
+  // Бот отвечает кандидату сам и сразу — сообщение уже доставлено, а строка
+  // в базе появляется следом, с проставленным external_message_id. Без этой
+  // проверки мы отправили бы его второй раз: человек получил бы дубль.
+  if (row.external_message_id) {
     return new Response("ok");
   }
 
