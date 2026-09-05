@@ -21,6 +21,8 @@ import type {
   Message, Note, Offer, OfferStatus, PipelineStage, PracticalCheck, Profile, Referral,
   RejectionReason, Requisition, SalaryGap, SlaBreach, TeamOpinion, UrgentNeed, Vacancy,
   VacancyApproval, VacancyCriterion, VacancyVersion, WorkFormat,
+  Employee, OnboardingTask, IdpPlan, ProbationReview, HiringSatisfaction,
+  LearningMaterial, Mentorship, PeopleCheckpoint, SeasonalityRow,
 } from "./types";
 
 // ===========================================================================
@@ -1665,4 +1667,394 @@ export async function logCall(
     kind: "call",
     application_id: applicationId,
   });
+}
+
+// ===========================================================================
+// ЖИЗНЬ ПОСЛЕ НАЙМА
+//
+// Найм заканчивался этапом «Вышел». Дальше тишина — хотя именно там видно,
+// тех ли мы брали. Оценка на испытательном по тем же критериям, что были
+// на отборе, превращает качество найма из мнения в цифру.
+// ===========================================================================
+
+export async function listEmployees(): Promise<Employee[]> {
+  if (isDemoMode) return [...demo.employees];
+  const { data, error } = await db()
+    .from("employees")
+    .select(`
+      id, candidate_id, application_id, position_title, status,
+      hired_on, probation_ends_on,
+      candidates ( full_name ),
+      departments ( name ),
+      mentor:profiles!employees_mentor_id_fkey ( full_name ),
+      manager:profiles!employees_line_manager_id_fkey ( full_name )
+    `)
+    .order("hired_on", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((e: any) => ({
+    id: e.id,
+    candidate_id: e.candidate_id,
+    application_id: e.application_id,
+    full_name: e.candidates?.full_name ?? "Сотрудник",
+    position_title: e.position_title,
+    department_name: e.departments?.name ?? null,
+    status: e.status,
+    hired_on: e.hired_on,
+    probation_ends_on: e.probation_ends_on,
+    mentor_name: e.mentor?.full_name ?? null,
+    line_manager_name: e.manager?.full_name ?? null,
+    days_worked: Math.max(
+      0,
+      Math.floor((Date.now() - new Date(e.hired_on).getTime()) / 86_400_000),
+    ),
+  }));
+}
+
+export async function listOnboardingTasks(employeeId: string): Promise<OnboardingTask[]> {
+  if (isDemoMode) {
+    return demo.onboardingTasks.filter((t: any) => t.employee_id === employeeId);
+  }
+  const { data, error } = await db()
+    .from("onboarding_tasks")
+    .select("id, horizon, title, description, due_on, done_at, order_index, onboarding_plans!inner ( employee_id )")
+    .eq("onboarding_plans.employee_id", employeeId)
+    .order("horizon")
+    .order("order_index");
+  if (error) throw error;
+  return (data ?? []) as unknown as OnboardingTask[];
+}
+
+export async function toggleOnboardingTask(taskId: string, done: boolean): Promise<void> {
+  const at = done ? new Date().toISOString() : null;
+  if (isDemoMode) {
+    const t = demo.onboardingTasks.find((x: any) => x.id === taskId);
+    if (t) t.done_at = at;
+    return;
+  }
+  const { error } = await db().from("onboarding_tasks").update({ done_at: at }).eq("id", taskId);
+  if (error) throw error;
+}
+
+export async function getIdpPlan(employeeId: string): Promise<IdpPlan | null> {
+  if (isDemoMode) return demo.idpPlans.find((p: any) => p.employee_id === employeeId) ?? null;
+  const { data, error } = await db()
+    .from("idp_plans")
+    .select(`
+      id, goal, horizon_months, is_ai_generated, created_at,
+      idp_items ( id, what_to_learn, where_to_learn, expected_result, why, due_on, done_at, order_index )
+    `)
+    .eq("employee_id", employeeId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  const row = data as any;
+  return {
+    id: row.id, goal: row.goal, horizon_months: row.horizon_months,
+    is_ai_generated: row.is_ai_generated, created_at: row.created_at,
+    items: (row.idp_items ?? []).sort((a: any, b: any) => a.order_index - b.order_index),
+  };
+}
+
+export async function saveIdpPlan(
+  employeeId: string,
+  goal: string,
+  horizonMonths: number,
+  items: { what_to_learn: string; where_to_learn: string; expected_result: string; why: string }[],
+): Promise<void> {
+  if (isDemoMode) {
+    const plan: any = {
+      id: `idp-${Date.now()}`, employee_id: employeeId, goal,
+      horizon_months: horizonMonths, is_ai_generated: false,
+      created_at: new Date().toISOString(),
+      items: items.map((it, i) => ({ id: `idpi-${Date.now()}-${i}`, ...it, due_on: null, done_at: null })),
+    };
+    const ix = demo.idpPlans.findIndex((p: any) => p.employee_id === employeeId);
+    if (ix >= 0) demo.idpPlans[ix] = plan;
+    else demo.idpPlans.push(plan);
+    return;
+  }
+  const { data: plan, error } = await db()
+    .from("idp_plans")
+    .insert({ employee_id: employeeId, goal, horizon_months: horizonMonths, is_ai_generated: false })
+    .select("id")
+    .single();
+  if (error) throw error;
+  if (items.length) {
+    await db().from("idp_items").insert(
+      items.map((it, i) => ({ plan_id: plan.id, ...it, order_index: i })),
+    );
+  }
+}
+
+export async function toggleIdpItem(itemId: string, done: boolean): Promise<void> {
+  const at = done ? new Date().toISOString() : null;
+  if (isDemoMode) {
+    for (const p of demo.idpPlans as any[]) {
+      const it = p.items.find((x: any) => x.id === itemId);
+      if (it) it.done_at = at;
+    }
+    return;
+  }
+  const { error } = await db().from("idp_items").update({ done_at: at }).eq("id", itemId);
+  if (error) throw error;
+}
+
+/**
+ * Оценка на испытательном (фишка 59).
+ *
+ * По тем же критериям, по которым отбирали. В этом весь смысл: если на
+ * отборе критерий стоял «закрыт», а через два месяца «не закрыт» — вопрос
+ * не к сотруднику, а к тому, чем мы этот критерий проверяли.
+ */
+export async function listProbationReviews(employeeId: string): Promise<ProbationReview[]> {
+  if (isDemoMode) return demo.probationReviews.filter((r: any) => r.employee_id === employeeId);
+  const { data, error } = await db()
+    .from("probation_reviews")
+    .select(`
+      id, checkpoint, criterion_id, result, comment, created_at,
+      vacancy_criteria ( name ), profiles ( full_name )
+    `)
+    .eq("employee_id", employeeId)
+    .order("checkpoint");
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({
+    id: r.id, checkpoint: r.checkpoint, criterion_id: r.criterion_id,
+    criterion_name: r.vacancy_criteria?.name ?? null,
+    result: r.result, comment: r.comment,
+    reviewer_name: r.profiles?.full_name ?? null,
+    created_at: r.created_at,
+  }));
+}
+
+export async function saveProbationReview(
+  employeeId: string,
+  checkpoint: number,
+  rows: { criterion_id: string | null; criterion_name: string | null; result: CriterionResult; comment: string }[],
+): Promise<void> {
+  if (isDemoMode) {
+    for (const r of rows) {
+      (demo.probationReviews as any[]).push({
+        id: `pr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        employee_id: employeeId, checkpoint,
+        criterion_id: r.criterion_id, criterion_name: r.criterion_name,
+        result: r.result, comment: r.comment,
+        reviewer_name: "Вы", created_at: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+  const { data: sess } = await db().auth.getUser();
+  const { error } = await db().from("probation_reviews").insert(
+    rows.map((r) => ({
+      employee_id: employeeId, reviewer_id: sess.user?.id, checkpoint,
+      criterion_id: r.criterion_id, result: r.result, comment: r.comment || null,
+    })),
+  );
+  if (error) throw error;
+}
+
+/** Оценка качества найма заказчиком через 1, 3 и 6 месяцев (фишка 43). */
+export async function listSatisfaction(employeeId: string): Promise<HiringSatisfaction[]> {
+  if (isDemoMode) return demo.satisfaction.filter((s: any) => s.employee_id === employeeId);
+  const { data, error } = await db()
+    .from("hiring_satisfaction")
+    .select("id, month_mark, score, would_hire_again, comment, created_at, profiles ( full_name )")
+    .eq("employee_id", employeeId)
+    .order("month_mark");
+  if (error) throw error;
+  return (data ?? []).map((s: any) => ({
+    id: s.id, month_mark: s.month_mark, score: s.score,
+    would_hire_again: s.would_hire_again, comment: s.comment,
+    manager_name: s.profiles?.full_name ?? null, created_at: s.created_at,
+  }));
+}
+
+export async function saveSatisfaction(
+  employeeId: string,
+  monthMark: number,
+  score: number,
+  wouldHireAgain: boolean,
+  comment: string,
+): Promise<void> {
+  if (isDemoMode) {
+    (demo.satisfaction as any[]).push({
+      id: `hs-${Date.now()}`, employee_id: employeeId, month_mark: monthMark,
+      score, would_hire_again: wouldHireAgain, comment,
+      manager_name: "Вы", created_at: new Date().toISOString(),
+    });
+    return;
+  }
+  const { data: sess } = await db().auth.getUser();
+  const { error } = await db().from("hiring_satisfaction").upsert(
+    {
+      employee_id: employeeId, manager_id: sess.user?.id, month_mark: monthMark,
+      score, would_hire_again: wouldHireAgain, comment: comment || null,
+    },
+    { onConflict: "employee_id,manager_id,month_mark" },
+  );
+  if (error) throw error;
+}
+
+/** Что назрело по календарю: контрольные точки и опросы руководителя. */
+export async function listCheckpoints(): Promise<PeopleCheckpoint[]> {
+  if (isDemoMode) return demo.checkpoints;
+  const { data, error } = await db()
+    .from("v_people_checkpoints")
+    .select("*")
+    .order("due_on");
+  if (error) throw error;
+  return (data ?? []) as PeopleCheckpoint[];
+}
+
+/**
+ * База материалов (фишка 58).
+ *
+ * Возражение «материалы устареют, никто их не обновит» снимается не
+ * обещанием, а механикой: у каждого есть владелец и срок пересмотра.
+ * Просроченные видны сразу и первыми.
+ */
+function isStale(actualized: string, everyDays: number): boolean {
+  return Date.now() - new Date(actualized).getTime() > everyDays * 86_400_000;
+}
+
+export async function listMaterials(): Promise<LearningMaterial[]> {
+  if (isDemoMode) {
+    return demo.materials.map((m: any) => ({
+      ...m, is_stale: isStale(m.actualized_on, m.review_every_days),
+    }));
+  }
+  const { data, error } = await db()
+    .from("learning_materials")
+    .select("id, title, url, body_md, actualized_on, review_every_days, tags, profiles ( full_name )")
+    .eq("is_active", true)
+    .order("actualized_on");
+  if (error) throw error;
+  return (data ?? []).map((m: any) => ({
+    id: m.id, title: m.title, url: m.url, body_md: m.body_md,
+    owner_name: m.profiles?.full_name ?? null,
+    actualized_on: m.actualized_on, review_every_days: m.review_every_days,
+    tags: m.tags ?? [],
+    is_stale: isStale(m.actualized_on, m.review_every_days),
+  }));
+}
+
+export async function saveMaterial(input: {
+  title: string; url: string; tags: string[]; reviewEveryDays: number;
+}): Promise<void> {
+  if (isDemoMode) {
+    (demo.materials as any[]).unshift({
+      id: `lm-${Date.now()}`, title: input.title, url: input.url || null, body_md: null,
+      owner_name: "Вы", actualized_on: new Date().toISOString().slice(0, 10),
+      review_every_days: input.reviewEveryDays, tags: input.tags, is_stale: false,
+    });
+    return;
+  }
+  const { data: sess } = await db().auth.getUser();
+  const { error } = await db().from("learning_materials").insert({
+    title: input.title, url: input.url || null, owner_id: sess.user?.id,
+    tags: input.tags, review_every_days: input.reviewEveryDays,
+  });
+  if (error) throw error;
+}
+
+/** Подтвердить, что материал ещё актуален: сдвигает срок пересмотра. */
+export async function actualizeMaterial(id: string): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  if (isDemoMode) {
+    const m = demo.materials.find((x: any) => x.id === id);
+    if (m) m.actualized_on = today;
+    return;
+  }
+  const { error } = await db()
+    .from("learning_materials")
+    .update({ actualized_on: today })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/** Наставничество: видно и учитывается (фишка 57). */
+export async function listMentorships(): Promise<Mentorship[]> {
+  if (isDemoMode) return demo.mentorships;
+  const { data, error } = await db()
+    .from("mentorships")
+    .select(`
+      id, started_on, ended_on, hours_logged, bonus_amount, bonus_paid_at,
+      profiles ( full_name ),
+      employees ( candidates ( full_name ) )
+    `)
+    .order("started_on", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((m: any) => ({
+    id: m.id,
+    mentor_name: m.profiles?.full_name ?? "—",
+    employee_name: m.employees?.candidates?.full_name ?? "—",
+    started_on: m.started_on, ended_on: m.ended_on,
+    hours_logged: Number(m.hours_logged ?? 0),
+    bonus_amount: Number(m.bonus_amount ?? 0),
+    bonus_paid_at: m.bonus_paid_at,
+  }));
+}
+
+/** Сезонность найма по месяцам (фишка 54). */
+export async function getSeasonality(): Promise<SeasonalityRow[]> {
+  if (isDemoMode) return demo.seasonality;
+  const { data, error } = await db()
+    .from("v_hiring_seasonality")
+    .select("*")
+    .order("month_no");
+  if (error) throw error;
+  return (data ?? []) as SeasonalityRow[];
+}
+
+/**
+ * Экспорт своих данных (фишка 63).
+ *
+ * Право на переносимость — не только буква закона. Человек, который видит,
+ * что именно о нём хранят, охотнее соглашается это отдать. Собираем всё,
+ * что с ним связано, в один файл.
+ */
+export async function exportMyData(candidateId: string): Promise<Record<string, unknown>> {
+  if (isDemoMode) {
+    const c = demo.candidates.find((x) => x.id === candidateId);
+    const myConvIds = demo.conversations
+      .filter((cv) => cv.candidate_id === candidateId)
+      .map((cv) => cv.id);
+    return {
+      выгружено: new Date().toISOString(),
+      профиль: c ?? null,
+      отклики: demo.applications.filter((a) => a.candidate_id === candidateId),
+      переписка: demoMessages.filter((m) => myConvIds.includes(m.conversation_id)),
+      документы: demo.documents.filter((d) => d.candidate_id === candidateId),
+    };
+  }
+
+  const [profile, applications, conversations, documents, consents] = await Promise.all([
+    db().from("candidates").select("*").eq("id", candidateId).maybeSingle(),
+    db().from("applications").select("*, vacancies ( title )").eq("candidate_id", candidateId),
+    db().from("conversations").select("id").eq("candidate_id", candidateId),
+    db().from("candidate_documents").select("kind, state, issued_on, expires_on").eq("candidate_id", candidateId),
+    db().from("consents").select("kind, granted_at, revoked_at, text_version").eq("candidate_id", candidateId),
+  ]);
+
+  const convIds = (conversations.data ?? []).map((c: any) => c.id);
+  const messages = convIds.length
+    ? await db().from("messages").select("direction, author_kind, body, sent_at").in("conversation_id", convIds)
+    : { data: [] };
+
+  // Служебные поля наружу не отдаём: поисковый вектор и индекс человеку
+  // ничего не говорят, а файл раздувают.
+  const raw = (profile.data ?? {}) as any;
+  delete raw.embedding;
+  delete raw.search_tsv;
+
+  return {
+    выгружено: new Date().toISOString(),
+    профиль: raw,
+    отклики: applications.data ?? [],
+    переписка: messages.data ?? [],
+    документы: documents.data ?? [],
+    согласия: consents.data ?? [],
+  };
 }

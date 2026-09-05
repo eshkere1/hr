@@ -12,6 +12,8 @@ import Vacancies, { VacancyCard } from "@/pages/Vacancies";
 import Candidates from "@/pages/Candidates";
 import Inbox from "@/pages/Inbox";
 import Bots from "@/pages/Bots";
+import Employees, { Materials, Mentorships } from "@/pages/Employees";
+import Seasonality from "@/pages/Seasonality";
 import Documents from "@/pages/Documents";
 import WaitingForMe from "@/pages/WaitingForMe";
 import Requisitions, { RequisitionNew } from "@/pages/Requisitions";
@@ -161,6 +163,38 @@ export default function App() {
           element={
             <RoleGate roles={["hr_manager", "director", "superuser"]}>
               <Candidates />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/employees"
+          element={
+            <RoleGate roles={["hr_manager", "director", "dept_head", "line_manager", "superuser"]}>
+              <Employees />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/mentorships"
+          element={
+            <RoleGate roles={["hr_manager", "director", "superuser"]}>
+              <Mentorships />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/materials"
+          element={
+            <RoleGate roles={["hr_manager", "director", "dept_head", "line_manager", "employee", "superuser"]}>
+              <Materials />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/seasonality"
+          element={
+            <RoleGate roles={["hr_manager", "director", "superuser"]}>
+              <Seasonality />
             </RoleGate>
           }
         />

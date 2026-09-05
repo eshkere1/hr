@@ -42,6 +42,15 @@ import type {
   VacancyCriterion,
   VacancyVersion,
   MessengerBot,
+  Employee,
+  OnboardingTask,
+  IdpPlan,
+  ProbationReview,
+  HiringSatisfaction,
+  LearningMaterial,
+  Mentorship,
+  PeopleCheckpoint,
+  SeasonalityRow,
 } from "./types";
 
 const H = 3600_000;
@@ -49,6 +58,8 @@ const D = 86_400_000;
 const now = Date.now();
 const hoursAgo = (n: number) => new Date(now - n * H).toISOString();
 const daysAgo = (n: number) => new Date(now - n * D).toISOString();
+/** Только дата, без времени: колонки date в базе хранят именно так. */
+const dateDaysAgo = (n: number) => new Date(now - n * D).toISOString().slice(0, 10);
 const inHours = (n: number) => new Date(now + n * H).toISOString();
 const inDays = (n: number) => new Date(now + n * D).toISOString();
 
@@ -1041,3 +1052,211 @@ applications
       sent_at: hoursAgo(Math.floor(rnd() * 90)),
     });
   });
+
+// ---------------------------------------------------------------------------
+// ЖИЗНЬ ПОСЛЕ НАЙМА
+//
+// Трое вышедших на разных сроках: один только начал, второй прошёл две
+// контрольные точки, третий доработал испытательный. На таком наборе видно
+// и «что делать сегодня», и «что показал испытательный».
+// ---------------------------------------------------------------------------
+export const employees: Employee[] = [
+  {
+    id: "emp1", candidate_id: "k1", application_id: "a1",
+    full_name: "Ирина Ковалёва", position_title: "Backend-разработчик",
+    department_name: "Разработка", status: "probation",
+    hired_on: dateDaysAgo(68), probation_ends_on: dateDaysAgo(-22),
+    mentor_name: "Дмитрий Лавров", line_manager_name: "Дмитрий Лавров",
+    days_worked: 68,
+  },
+  {
+    id: "emp2", candidate_id: "k6", application_id: "a11",
+    full_name: "Дарья Плотникова", position_title: "Менеджер по продажам",
+    department_name: "Продажи", status: "probation",
+    hired_on: dateDaysAgo(34), probation_ends_on: dateDaysAgo(-56),
+    mentor_name: "Марина Гущина", line_manager_name: "Марина Гущина",
+    days_worked: 34,
+  },
+  {
+    id: "emp3", candidate_id: "k10", application_id: "a4",
+    full_name: "Ксения Романова", position_title: "Аналитик данных",
+    department_name: "Аналитика", status: "active",
+    hired_on: dateDaysAgo(190), probation_ends_on: dateDaysAgo(100),
+    mentor_name: null, line_manager_name: "Дмитрий Лавров",
+    days_worked: 190,
+  },
+];
+
+const ONB: [number, string, string][] = [
+  [30, "Познакомиться с командой", "Встречи один на один с теми, с кем работать каждый день. Цель — понять, кто чем занят и к кому идти с вопросом."],
+  [30, "Разобраться в продукте и процессах", "Пройти материалы для новичка. Если что-то устарело — сказать: это ценнее, чем промолчать."],
+  [30, "Сделать первую самостоятельную задачу", "Маленькую и до конца. Смысл в том, чтобы пройти весь путь: постановка, работа, проверка, выпуск."],
+  [30, "Обратная связь через месяц", "Что получается, что мешает, совпало ли ожидание с реальностью."],
+  [60, "Вести свой участок без напоминаний", "Задачи закрываются без того, чтобы кто-то стоял рядом."],
+  [60, "Разобрать один сложный случай", "То, что не решается по инструкции. Видно, как человек думает без готового ответа."],
+  [60, "Оценка по критериям отбора", "Те же критерии, по которым отбирали. Расхождение — сигнал нам, а не сотруднику."],
+  [90, "Взять зону ответственности", "Участок, за который отвечает он, а не наставник."],
+  [90, "Предложить одно улучшение", "Свежий взгляд живёт три месяца, дальше глаз замыливается."],
+  [90, "Решение по испытательному сроку", "Итог по критериям плюс оценка руководителя."],
+];
+
+export const onboardingTasks: (OnboardingTask & { employee_id: string })[] = [];
+for (const e of employees) {
+  ONB.forEach(([horizon, title, description], i) => {
+    // Закрытыми считаем задачи тех горизонтов, которые человек уже прошёл.
+    const passed = e.days_worked >= horizon;
+    onboardingTasks.push({
+      id: `ot-${e.id}-${i}`,
+      employee_id: e.id,
+      horizon,
+      title,
+      description,
+      due_on: dateDaysAgo(-(horizon - e.days_worked)),
+      done_at: passed && i % 4 !== 3 ? daysAgo(Math.max(1, e.days_worked - horizon)) : null,
+      order_index: i,
+    });
+  });
+}
+
+export const idpPlans: (IdpPlan & { employee_id: string })[] = [
+  {
+    id: "idp1", employee_id: "emp1",
+    goal: "Забрать на себя интеграции целиком — от постановки до поддержки",
+    horizon_months: 6, is_ai_generated: false, created_at: daysAgo(40),
+    items: [
+      {
+        id: "idpi1",
+        what_to_learn: "Очереди и повторная обработка",
+        where_to_learn: "Внутренний материал «Очереди у нас» плюс разбор с наставником",
+        expected_result: "Может объяснить, что произойдёт при двойной доставке сообщения",
+        why: "На отборе критерий «асинхронные задачи» закрылся частично — это и есть пробел",
+        due_on: dateDaysAgo(-20), done_at: null,
+      },
+      {
+        id: "idpi2",
+        what_to_learn: "Планы запросов в PostgreSQL",
+        where_to_learn: "Разбор трёх медленных запросов из нашего кода",
+        expected_result: "Находит причину медленного запроса без подсказки",
+        why: "Половина инцидентов у нас упирается в запросы, а не в код",
+        due_on: dateDaysAgo(-45), done_at: null,
+      },
+    ],
+  },
+];
+
+export const probationReviews: (ProbationReview & { employee_id: string })[] = [
+  {
+    id: "pr1", employee_id: "emp1", checkpoint: 30, criterion_id: "c1",
+    criterion_name: "Python в продакшене от 3 лет", result: "met",
+    comment: "Подтверждается на задачах, вопросов нет",
+    reviewer_name: "Дмитрий Лавров", created_at: daysAgo(38),
+  },
+  {
+    id: "pr2", employee_id: "emp1", checkpoint: 30, criterion_id: "c3",
+    criterion_name: "Асинхронные задачи", result: "partial",
+    comment: "Пишет, но идемпотентность приходится напоминать. На отборе критерий стоял «закрыт» — значит, проверяли не тем",
+    reviewer_name: "Дмитрий Лавров", created_at: daysAgo(38),
+  },
+  {
+    id: "pr3", employee_id: "emp1", checkpoint: 60, criterion_id: "c4",
+    criterion_name: "Разбор чужого кода", result: "met",
+    comment: "Зашла в незнакомый модуль и разобралась за день",
+    reviewer_name: "Дмитрий Лавров", created_at: daysAgo(8),
+  },
+];
+
+export const satisfaction: (HiringSatisfaction & { employee_id: string })[] = [
+  {
+    id: "hs1", employee_id: "emp1", month_mark: 1, score: 4, would_hire_again: true,
+    comment: "Взял бы снова. Единственное — ждал более самостоятельного старта",
+    manager_name: "Дмитрий Лавров", created_at: daysAgo(38),
+  },
+  {
+    id: "hs2", employee_id: "emp3", month_mark: 3, score: 5, would_hire_again: true,
+    comment: "Закрыла участок полностью, вопросов не возникает",
+    manager_name: "Дмитрий Лавров", created_at: daysAgo(100),
+  },
+];
+
+export const checkpoints: PeopleCheckpoint[] = [
+  {
+    employee_id: "emp1", full_name: "Ирина Ковалёва",
+    position_title: "Backend-разработчик", kind: "probation", mark: 60,
+    due_on: dateDaysAgo(8), days_worked: 68,
+  },
+  {
+    employee_id: "emp1", full_name: "Ирина Ковалёва",
+    position_title: "Backend-разработчик", kind: "satisfaction", mark: 3,
+    due_on: dateDaysAgo(-22), days_worked: 68,
+  },
+  {
+    employee_id: "emp2", full_name: "Дарья Плотникова",
+    position_title: "Менеджер по продажам", kind: "probation", mark: 30,
+    due_on: dateDaysAgo(4), days_worked: 34,
+  },
+  {
+    employee_id: "emp2", full_name: "Дарья Плотникова",
+    position_title: "Менеджер по продажам", kind: "satisfaction", mark: 1,
+    due_on: dateDaysAgo(4), days_worked: 34,
+  },
+];
+
+export const materials: LearningMaterial[] = [
+  {
+    id: "lm1", title: "Как у нас устроены очереди", url: null, body_md: null,
+    owner_name: "Дмитрий Лавров", actualized_on: dateDaysAgo(40),
+    review_every_days: 180, tags: ["разработка", "новичку"], is_stale: false,
+  },
+  {
+    id: "lm2", title: "Скрипт первого звонка клиенту", url: null, body_md: null,
+    owner_name: "Марина Гущина", actualized_on: dateDaysAgo(300),
+    review_every_days: 180, tags: ["продажи", "новичку"], is_stale: true,
+  },
+  {
+    id: "lm3", title: "Регламент: что делать при инциденте", url: null, body_md: null,
+    owner_name: "Дмитрий Лавров", actualized_on: dateDaysAgo(20),
+    review_every_days: 90, tags: ["всем"], is_stale: false,
+  },
+  {
+    id: "lm4", title: "Доступы и учётные записи для новичка", url: null, body_md: null,
+    owner_name: "Ольга Тимофеева", actualized_on: dateDaysAgo(420),
+    review_every_days: 365, tags: ["новичку"], is_stale: true,
+  },
+];
+
+export const mentorships: Mentorship[] = [
+  {
+    id: "mn1", mentor_name: "Дмитрий Лавров", employee_name: "Ирина Ковалёва",
+    started_on: dateDaysAgo(68), ended_on: null,
+    hours_logged: 14.5, bonus_amount: 15000, bonus_paid_at: null,
+  },
+  {
+    id: "mn2", mentor_name: "Марина Гущина", employee_name: "Дарья Плотникова",
+    started_on: dateDaysAgo(34), ended_on: null,
+    hours_logged: 8, bonus_amount: 15000, bonus_paid_at: null,
+  },
+  {
+    id: "mn3", mentor_name: "Дмитрий Лавров", employee_name: "Ксения Романова",
+    started_on: dateDaysAgo(190), ended_on: dateDaysAgo(100),
+    hours_logged: 22, bonus_amount: 15000, bonus_paid_at: daysAgo(95),
+  },
+];
+
+/**
+ * Сезонность. Цифры не выдуманы ровными: летний провал и осенний пик —
+ * то, что видно почти в любой компании, и ради чего фишка нужна.
+ */
+export const seasonality: SeasonalityRow[] = [
+  { month_no: 1, hired: 2, left_company: 4, vacancies_opened: 6, avg_days_to_close: 41 },
+  { month_no: 2, hired: 4, left_company: 2, vacancies_opened: 7, avg_days_to_close: 38 },
+  { month_no: 3, hired: 6, left_company: 3, vacancies_opened: 9, avg_days_to_close: 34 },
+  { month_no: 4, hired: 5, left_company: 2, vacancies_opened: 8, avg_days_to_close: 33 },
+  { month_no: 5, hired: 3, left_company: 5, vacancies_opened: 6, avg_days_to_close: 45 },
+  { month_no: 6, hired: 2, left_company: 6, vacancies_opened: 5, avg_days_to_close: 52 },
+  { month_no: 7, hired: 1, left_company: 7, vacancies_opened: 4, avg_days_to_close: 58 },
+  { month_no: 8, hired: 3, left_company: 4, vacancies_opened: 9, avg_days_to_close: 47 },
+  { month_no: 9, hired: 8, left_company: 2, vacancies_opened: 14, avg_days_to_close: 31 },
+  { month_no: 10, hired: 7, left_company: 2, vacancies_opened: 11, avg_days_to_close: 29 },
+  { month_no: 11, hired: 5, left_company: 3, vacancies_opened: 8, avg_days_to_close: 35 },
+  { month_no: 12, hired: 2, left_company: 5, vacancies_opened: 4, avg_days_to_close: 49 },
+];

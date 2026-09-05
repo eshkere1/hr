@@ -201,6 +201,7 @@ function MyData({ candidateId }: { candidateId: string | null }) {
     [candidateId],
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [deleted, setDeleted] = useState(false);
 
   const list = consents.data ?? [];
@@ -258,8 +259,34 @@ function MyData({ candidateId }: { candidateId: string | null }) {
         )}
 
         <div className="flex flex-wrap gap-2 border-t border-border pt-3">
-          <Button variant="secondary" size="sm">
-            <Download className="h-4 w-4" /> Скачать мои данные
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!candidateId || exporting}
+            onClick={async () => {
+              if (!candidateId) return;
+              setExporting(true);
+              try {
+                // Файл собирается и скачивается прямо здесь: отправлять
+                // выгрузку почтой значит создать ещё одну копию данных
+                // человека там, где он её уже не контролирует.
+                const data = await api.exportMyData(candidateId);
+                const blob = new Blob([JSON.stringify(data, null, 2)], {
+                  type: "application/json",
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `мои-данные-${new Date().toISOString().slice(0, 10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } finally {
+                setExporting(false);
+              }
+            }}
+          >
+            <Download className="h-4 w-4" />
+            {exporting ? "Собираем…" : "Скачать мои данные"}
           </Button>
           <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
             <Trash2 className="h-4 w-4" /> Удалить мои данные

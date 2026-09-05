@@ -713,3 +713,136 @@ export interface SalaryGap {
   /** Насколько выше рынка */
   over_market: number | null;
 }
+
+// ---------------------------------------------------------------------------
+// ЖИЗНЬ ПОСЛЕ НАЙМА
+//
+// Найм заканчивался этапом «Вышел» и обрывался. Это дорого стоит именно
+// найму: пока нет оценки на испытательном, качество подбора нечем измерить.
+// Срок закрытия вакансии показывает скорость, но не показывает, тех ли берём.
+// ---------------------------------------------------------------------------
+
+/** Сотрудник. Мост «кандидат → отклик → человек в штате». */
+export interface Employee {
+  id: string;
+  candidate_id: string | null;
+  application_id: string | null;
+  full_name: string;
+  position_title: string | null;
+  department_name: string | null;
+  status: string;
+  hired_on: string;
+  probation_ends_on: string | null;
+  mentor_name: string | null;
+  line_manager_name: string | null;
+  days_worked: number;
+}
+
+/** Задача онбординга. Горизонт — 30, 60 или 90 дней (фишка 56). */
+export interface OnboardingTask {
+  id: string;
+  horizon: number;
+  title: string;
+  description: string | null;
+  due_on: string | null;
+  done_at: string | null;
+  order_index: number;
+}
+
+/** Пункт индивидуального плана развития (фишка 14). */
+export interface IdpItem {
+  id: string;
+  what_to_learn: string;
+  where_to_learn: string | null;
+  expected_result: string | null;
+  why: string | null;
+  due_on: string | null;
+  done_at: string | null;
+}
+
+export interface IdpPlan {
+  id: string;
+  goal: string;
+  horizon_months: number;
+  is_ai_generated: boolean;
+  created_at: string;
+  items: IdpItem[];
+}
+
+/**
+ * Оценка на испытательном (фишка 59).
+ *
+ * По ТЕМ ЖЕ критериям, по которым отбирали. Расхождение — сигнал не
+ * сотруднику, а нам: значит, отбор проверял не то.
+ */
+export interface ProbationReview {
+  id: string;
+  checkpoint: number;
+  criterion_id: string | null;
+  criterion_name: string | null;
+  result: CriterionResult;
+  comment: string | null;
+  reviewer_name: string | null;
+  created_at: string;
+}
+
+/** Оценка качества найма заказчиком через 1, 3 и 6 месяцев (фишка 43). */
+export interface HiringSatisfaction {
+  id: string;
+  month_mark: number;
+  score: number;
+  would_hire_again: boolean | null;
+  comment: string | null;
+  manager_name: string | null;
+  created_at: string;
+}
+
+/**
+ * Материал для обучения (фишка 58).
+ *
+ * У каждого есть владелец и дата актуализации — иначе база материалов
+ * превращается в кладбище ссылок, которые никто не обновляет.
+ */
+export interface LearningMaterial {
+  id: string;
+  title: string;
+  url: string | null;
+  body_md: string | null;
+  owner_name: string | null;
+  actualized_on: string;
+  review_every_days: number;
+  tags: string[];
+  is_stale: boolean;
+}
+
+/** Наставничество: видно и учитывается (фишка 57). */
+export interface Mentorship {
+  id: string;
+  mentor_name: string;
+  employee_name: string;
+  started_on: string;
+  ended_on: string | null;
+  hours_logged: number;
+  bonus_amount: number;
+  bonus_paid_at: string | null;
+}
+
+/** Что назрело по календарю: контрольная точка или опрос руководителя. */
+export interface PeopleCheckpoint {
+  employee_id: string;
+  full_name: string;
+  position_title: string | null;
+  kind: "probation" | "satisfaction";
+  mark: number;
+  due_on: string;
+  days_worked: number;
+}
+
+/** Сезонность найма по месяцам (фишка 54). */
+export interface SeasonalityRow {
+  month_no: number;
+  hired: number;
+  left_company: number;
+  vacancies_opened: number;
+  avg_days_to_close: number;
+}

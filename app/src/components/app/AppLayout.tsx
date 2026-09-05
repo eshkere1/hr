@@ -5,6 +5,7 @@ import {
   ClipboardList, CalendarClock, GraduationCap, ShieldCheck, LogOut,
   Columns3, Archive as ArchiveIcon, FileSignature, CalendarDays, SlidersHorizontal,
   Menu as MenuIcon, X, UserCircle, Sun, PanelLeftClose, PanelLeftOpen, Bot,
+  UserCheck, Award, CalendarRange,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
@@ -66,10 +67,19 @@ const GROUPS: MenuGroup[] = [
     ],
   },
   {
+    title: "После найма",
+    items: [
+      { to: "/employees", label: "Сотрудники", icon: UserCheck, roles: ["hr_manager", "director", "dept_head", "line_manager", "superuser"] },
+      { to: "/mentorships", label: "Наставничество", icon: Award, roles: ["hr_manager", "director", "superuser"] },
+      { to: "/materials", label: "Материалы", icon: GraduationCap, roles: ["hr_manager", "director", "dept_head", "line_manager", "employee", "superuser"] },
+    ],
+  },
+  {
     title: "Итоги",
     items: [
       { to: "/dashboard", label: "Дашборд", icon: LayoutGrid, roles: ["superuser"] },
       { to: "/analytics", label: "Аналитика", icon: BarChart3, roles: ["director", "hr_manager", "superuser"] },
+      { to: "/seasonality", label: "Сезонность", icon: CalendarRange, roles: ["director", "hr_manager", "superuser"] },
     ],
   },
   {

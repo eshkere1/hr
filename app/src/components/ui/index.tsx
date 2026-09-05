@@ -281,12 +281,15 @@ export function Modal({
   title,
   children,
   footer,
+  wide,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  /** Для содержимого со вкладками и таблицами: в 520px оно не читается. */
+  wide?: boolean;
 }) {
   React.useEffect(() => {
     if (!open) return;
@@ -311,7 +314,10 @@ export function Modal({
         aria-modal="true"
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[86vh] w-full max-w-[520px] flex-col gap-[14px] overflow-y-auto rounded-xl border border-border bg-surface p-[22px] shadow-sh-3"
+        className={cn(
+          "flex max-h-[86vh] w-full flex-col gap-[14px] overflow-y-auto rounded-xl border border-border bg-surface p-[22px] shadow-sh-3",
+          wide ? "max-w-[820px]" : "max-w-[520px]",
+        )}
       >
         <h4 className="m-0 font-display text-[19px] font-semibold tracking-[-0.01em]">
           {title}
