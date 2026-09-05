@@ -77,6 +77,32 @@ Deno.serve(async (req) => {
   }
 });
 
+/** Адрес свой у каждого бота: по нему функция приёма понимает, кто принимает. */
+function webhookUrl(botId: string) {
+  return `${SUPABASE_URL}/functions/v1/telegram-webhook/${botId}`;
+}
+
+/**
+ * Регистрация адреса у Телеграма.
+ *
+ * allowed_updates перечисляет, что он вообще будет нам присылать. Забыть
+ * тут callback_query — значит получить бота, у которого не работают кнопки:
+ * нажатие происходит, но до нас не доходит, и отладить это по логам нельзя,
+ * потому что запроса просто нет.
+ */
+async function registerWebhook(token: string, url: string, secret: string) {
+  const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      url,
+      secret_token: secret,
+      allowed_updates: ["message", "edited_message", "callback_query"],
+    }),
+  });
+  return res.json();
+}
+
 /** Спросить у Телеграма, кто владелец токена. Заодно проверка, что он живой. */
 async function getMe(token: string) {
   const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
@@ -130,20 +156,8 @@ async function add(token?: string, name?: string, userId?: string) {
     throw error;
   }
 
-  // Адрес свой у каждого бота: по нему функция приёма и понимает, кто
-  // именно принимает сообщение.
-  const url = `${SUPABASE_URL}/functions/v1/telegram-webhook/${bot.id}`;
-  const res = await fetch(`https://api.telegram.org/bot${clean}/setWebhook`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      url,
-      secret_token: secret,
-      drop_pending_updates: true,
-      allowed_updates: ["message", "edited_message"],
-    }),
-  });
-  const setResult = await res.json();
+  const url = webhookUrl(bot.id);
+  const setResult = await registerWebhook(clean, url, secret);
 
   // Меню команд в самом Телеграме: кандидат видит кнопку со списком и не
   // должен угадывать, что боту можно написать.
@@ -186,10 +200,17 @@ async function recheck(botId?: string) {
 
   const { data: bot } = await admin
     .from("messenger_bots")
-    .select("id, token")
+    .select("id, token, webhook_secret")
     .eq("id", botId)
     .maybeSingle();
   if (!bot) return json({ error: "бот не найден" }, 404);
+
+  // Перед проверкой перерегистрируем адрес. Это чинит ботов, подключённых
+  // раньше: если в прошлый раз список типов обновлений был неполным или
+  // адрес сменился, «Проверить» приведёт всё в порядок само, без
+  // переподключения бота и потери переписки.
+  await registerWebhook(bot.token, webhookUrl(bot.id), bot.webhook_secret)
+    .catch(() => {/* если не вышло — увидим это в getWebhookInfo ниже */});
 
   const res = await fetch(`https://api.telegram.org/bot${bot.token}/getWebhookInfo`);
   const info = await res.json();
