@@ -24,13 +24,26 @@ const admin = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY
   auth: { persistSession: false },
 });
 
+/**
+ * Эту функцию, в отличие от двух остальных, вызывает браузер — а он перед
+ * POST на чужой домен спрашивает разрешение отдельным запросом OPTIONS.
+ * Без ответа на него и без этих заголовков вызов не уйдёт вовсе: браузер
+ * заблокирует его сам, и приложение увидит только «не удалось отправить».
+ */
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { ...CORS, "content-type": "application/json" },
   });
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
   // 1. Кто просит. Токен бота — ключ от всей переписки с кандидатами,
