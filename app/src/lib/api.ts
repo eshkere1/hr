@@ -2123,8 +2123,8 @@ export async function startHhConnect(): Promise<string> {
 }
 
 /** Обмен кода на доступ. Вызывается страницей возврата после авторизации. */
-export async function finishHhConnect(code: string) {
-  return callHh("hh-oauth", { action: "callback", code });
+export async function finishHhConnect(code: string, state: string | null) {
+  return callHh("hh-oauth", { action: "callback", code, state });
 }
 
 export async function removeHhAccount(accountId: string) {

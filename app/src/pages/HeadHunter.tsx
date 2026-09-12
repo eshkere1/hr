@@ -209,7 +209,7 @@ export function HhCallback() {
       return;
     }
 
-    api.finishHhConnect(code)
+    api.finishHhConnect(code, params.get("state"))
       .then(() => navigate("/hh", { replace: true }))
       .catch((e) => setError(e instanceof Error ? e.message : "Не удалось подключить"));
   }, [params, navigate]);

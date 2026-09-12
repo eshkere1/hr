@@ -59,7 +59,7 @@ Deno.serve(async (req) => {
   const { data: isSu } = await admin.rpc("has_role", { _user_id: userId, _role: "superuser" });
   if (!isSu) return json({ error: "нужны права суперпользователя" }, 403);
 
-  let payload: { action?: string; code?: string; account_id?: string };
+  let payload: { action?: string; code?: string; state?: string; account_id?: string };
   try {
     payload = await req.json();
   } catch {
@@ -68,8 +68,8 @@ Deno.serve(async (req) => {
 
   try {
     switch (payload.action) {
-      case "start": return start();
-      case "callback": return await callback(payload.code, userId);
+      case "start": return await start(userId);
+      case "callback": return await callback(payload.code, payload.state, userId);
       case "refresh": return json(await refreshAccount(payload.account_id!));
       case "remove": return await remove(payload.account_id);
       default: return json({ error: "неизвестное действие" }, 400);
@@ -81,16 +81,71 @@ Deno.serve(async (req) => {
 });
 
 /** Ссылка, по которой человек разрешает доступ к своему работодателю. */
-function start() {
+async function start(userId: string) {
   const url = new URL("https://hh.ru/oauth/authorize");
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", CLIENT_ID);
   url.searchParams.set("redirect_uri", REDIRECT_URI);
+  url.searchParams.set("state", await signState(userId));
   return json({ url: url.toString() });
 }
 
-async function callback(code: string | undefined, userId: string) {
+/**
+ * state — подпись, а не случайная строка в таблице.
+ *
+ * hh вернёт этот параметр на страницу возврата, и по нему мы убеждаемся, что
+ * обмениваем код, за которым сами же и посылали этого человека. Иначе
+ * достаточно подсунуть суперпользователю ссылку с чужим кодом — и к нашей
+ * системе окажется подключён чужой работодатель, а вместе с ним — чужие вакансии
+ * и чужие отклики.
+ *
+ * Подпись вместо таблицы: состояние живёт десять минут, и заводить под него
+ * таблицу, которую потом нужно чистить, ни к чему.
+ */
+async function signState(userId: string) {
+  const head = `${userId}.${Date.now() + 10 * 60_000}`;
+  return `${head}.${await hmac(head)}`;
+}
+
+/** Возвращает текст ошибки или null, если всё сошлось. */
+async function checkState(state: string | undefined, userId: string) {
+  if (!state) {
+    return "hh не вернул state. Начните подключение заново со страницы «hh.ru».";
+  }
+
+  const cut = state.lastIndexOf(".");
+  const head = state.slice(0, cut);
+  if (cut < 0 || (await hmac(head)) !== state.slice(cut + 1)) {
+    return "Подпись state не сошлась: подключение начато не в этой системе.";
+  }
+
+  const [stateUser, exp] = head.split(".");
+  if (stateUser !== userId) {
+    return "Ссылку на подключение запрашивал другой человек.";
+  }
+  if (Number(exp) < Date.now()) {
+    return "На подключение даётся десять минут, и они вышли. Нажмите «Подключить» ещё раз.";
+  }
+  return null;
+}
+
+async function hmac(data: string) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(CLIENT_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return Array.from(new Uint8Array(mac)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function callback(code: string | undefined, state: string | undefined, userId: string) {
   if (!code) return json({ error: "нет кода авторизации" }, 400);
+
+  const bad = await checkState(state, userId);
+  if (bad) return json({ error: bad }, 400);
 
   const body = new URLSearchParams({
     grant_type: "authorization_code",
