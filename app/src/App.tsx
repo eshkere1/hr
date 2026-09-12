@@ -12,6 +12,7 @@ import Vacancies, { VacancyCard } from "@/pages/Vacancies";
 import Candidates from "@/pages/Candidates";
 import Inbox from "@/pages/Inbox";
 import Bots from "@/pages/Bots";
+import HeadHunter, { HhCallback } from "@/pages/HeadHunter";
 import Employees, { Materials, Mentorships } from "@/pages/Employees";
 import Seasonality from "@/pages/Seasonality";
 import Documents from "@/pages/Documents";
@@ -195,6 +196,22 @@ export default function App() {
           element={
             <RoleGate roles={["hr_manager", "director", "superuser"]}>
               <Seasonality />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/hh"
+          element={
+            <RoleGate roles={["hr_manager", "director", "superuser"]}>
+              <HeadHunter />
+            </RoleGate>
+          }
+        />
+        <Route
+          path="/auth/hh/callback"
+          element={
+            <RoleGate roles={["hr_manager", "director", "superuser"]}>
+              <HhCallback />
             </RoleGate>
           }
         />

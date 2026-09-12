@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Sparkles } from "lucide-react";
 import * as api from "@/lib/api";
+import { PublishBlock } from "@/pages/HeadHunter";
 import { useAsync } from "@/hooks/useAsync";
 import { useAuth } from "@/hooks/useAuth";
 import { Button, Textarea } from "@/components/ui";
@@ -182,6 +183,7 @@ export function VacancyCard() {
           { id: "questions", label: "Вопросы на интервью" },
           { id: "funnel", label: "Воронка" },
           { id: "approval", label: "Согласование" },
+          { id: "publish", label: "Публикация" },
           { id: "versions", label: "Версии требований" },
         ]}
       />
@@ -260,6 +262,7 @@ export function VacancyCard() {
         )}
 
         {tab === "questions" && <QuestionsTab vacancyId={v.id} />}
+        {tab === "publish" && <PublishBlock vacancyId={v.id} />}
         {tab === "approval" && <ApprovalTab vacancyId={v.id} />}
         {tab === "versions" && <VersionsTab vacancyId={v.id} />}
 

@@ -2058,3 +2058,102 @@ export async function exportMyData(candidateId: string): Promise<Record<string, 
     согласия: consents.data ?? [],
   };
 }
+
+// ===========================================================================
+// HH.RU (фишка 30)
+//
+// Вакансия заводится один раз — здесь, — и уходит на hh кнопкой. Отклики
+// приходят обратно в ту же воронку. Рекрутер перестаёт вести две системы.
+//
+// Токены доступа сюда не попадают: они живут в базе под RLS, а операции
+// выполняют серверные функции.
+// ===========================================================================
+
+export interface HhAccount {
+  id: string;
+  employer_id: string | null;
+  employer_name: string | null;
+  manager_name: string | null;
+  is_active: boolean;
+  last_error: string | null;
+  last_sync_at: string | null;
+  token_valid: boolean;
+  expires_at: string;
+  published_count: number;
+  created_at: string;
+}
+
+export interface VacancyPublication {
+  id: string;
+  vacancy_id: string;
+  board: string;
+  external_id: string | null;
+  external_url: string | null;
+  published_at: string | null;
+  archived_at: string | null;
+  sync_error: string | null;
+  last_sync_at: string | null;
+}
+
+export async function listHhAccounts(): Promise<HhAccount[]> {
+  if (isDemoMode) return [];
+  const { data, error } = await db()
+    .from("v_hh_accounts")
+    .select("*")
+    .order("created_at");
+  if (error) throw error;
+  return (data ?? []) as HhAccount[];
+}
+
+async function callHh(fn: string, body: Record<string, unknown>) {
+  const { data, error } = await db().functions.invoke(fn, { body });
+  if (error) {
+    const detail = (data as any)?.error ?? error.message;
+    throw new Error(detail);
+  }
+  if ((data as any)?.error) throw new Error((data as any).error);
+  return data as any;
+}
+
+/** Ссылка, по которой человек разрешает доступ к своему работодателю. */
+export async function startHhConnect(): Promise<string> {
+  if (isDemoMode) throw new Error("В демо-режиме подключить hh нельзя: нужна база.");
+  const r = await callHh("hh-oauth", { action: "start" });
+  return r.url;
+}
+
+/** Обмен кода на доступ. Вызывается страницей возврата после авторизации. */
+export async function finishHhConnect(code: string) {
+  return callHh("hh-oauth", { action: "callback", code });
+}
+
+export async function removeHhAccount(accountId: string) {
+  return callHh("hh-oauth", { action: "remove", account_id: accountId });
+}
+
+export async function listPublications(vacancyId: string): Promise<VacancyPublication[]> {
+  if (isDemoMode) return [];
+  const { data, error } = await db()
+    .from("vacancy_publications")
+    .select("id, vacancy_id, board, external_id, external_url, published_at, archived_at, sync_error, last_sync_at")
+    .eq("vacancy_id", vacancyId);
+  if (error) throw error;
+  return (data ?? []) as VacancyPublication[];
+}
+
+export async function publishToHh(vacancyId: string, billingType = "standard") {
+  return callHh("hh-publish", { action: "publish", vacancy_id: vacancyId, billing_type: billingType });
+}
+
+export async function updateOnHh(vacancyId: string) {
+  return callHh("hh-publish", { action: "update", vacancy_id: vacancyId });
+}
+
+export async function archiveOnHh(vacancyId: string) {
+  return callHh("hh-publish", { action: "archive", vacancy_id: vacancyId });
+}
+
+/** Забрать новые отклики. Возвращает, сколько завелось. */
+export async function syncHh(): Promise<{ новых: number; просмотрено: number; проблемы?: string[] }> {
+  return callHh("hh-sync", {});
+}
