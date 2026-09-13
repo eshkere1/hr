@@ -561,14 +561,15 @@ export async function listMessages(conversationId: string): Promise<Message[]> {
   }
   const { data, error } = await db()
     .from("messages")
-    .select("id, conversation_id, direction, author_kind, body, sent_at, profiles ( full_name )")
+    .select("id, conversation_id, direction, author_kind, body, attachments, sent_at, profiles ( full_name )")
     .eq("conversation_id", conversationId)
     .order("sent_at");
   if (error) throw error;
   return (data ?? []).map((m: any) => ({
     id: m.id, conversation_id: m.conversation_id, direction: m.direction,
     author_kind: m.author_kind, author_name: m.profiles?.full_name ?? null,
-    body: m.body, sent_at: m.sent_at,
+    body: m.body, attachments: Array.isArray(m.attachments) ? m.attachments : [],
+    sent_at: m.sent_at,
   }));
 }
 
@@ -667,7 +668,10 @@ export async function listDocuments(candidateId?: string): Promise<CandidateDocu
     return [...rows].sort((a, b) => rank[a.state] - rank[b.state]);
   }
   let q = db().from("candidate_documents")
-    .select("id, candidate_id, kind, state, expires_on, candidates ( full_name )");
+    .select(
+      "id, candidate_id, kind, state, expires_on, verified_at, " +
+      "storage_path, file_name, file_size, mime_type, candidates ( full_name )",
+    );
   if (candidateId) q = q.eq("candidate_id", candidateId);
   const { data, error } = await q.order("expires_on", { ascending: true, nullsFirst: false });
   if (error) throw error;
@@ -2227,4 +2231,134 @@ export async function archiveOnHh(vacancyId: string) {
 /** Забрать новые отклики. Возвращает, сколько завелось. */
 export async function syncHh(): Promise<{ новых: number; просмотрено: number; проблемы?: string[] }> {
   return callHh("hh-sync", {});
+}
+
+// ===========================================================================
+// ФАЙЛЫ
+//
+// Хранилище закрытое: прямых ссылок на файлы не существует. Чтобы открыть
+// скан, система выписывает временную ссылку — и выписывает её только тому,
+// кому база и так разрешает видеть карточку. Права проверяются в двух местах
+// сразу: политика на строке документа и политика на самом объекте.
+// ===========================================================================
+
+const DOCS_BUCKET = "candidate-docs";
+
+/**
+ * Кладёт файл к документу кандидата.
+ *
+ * Путь начинается с id кандидата — по первой папке хранилище и определяет
+ * права. Имя файла заменяется на случайное: в исходном бывают пробелы,
+ * кириллица и нередко фамилия человека, а имя объекта видно в ссылке.
+ * Настоящее имя сохраняем отдельным полем и показываем его в интерфейсе.
+ */
+export async function uploadCandidateDocument(
+  candidateId: string,
+  kind: DocumentKind,
+  file: File,
+): Promise<void> {
+  if (isDemoMode) {
+    throw new Error("В демо-режиме файлы не загружаются: для них нужно хранилище.");
+  }
+
+  const ext = (file.name.split(".").pop() ?? "bin")
+    .toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "bin";
+  const path = `${candidateId}/${kind}/${crypto.randomUUID()}.${ext}`;
+
+  // Что лежало раньше — узнаём до загрузки: после upsert строка уже другая,
+  // и старый файл остался бы в хранилище навсегда.
+  const { data: prev } = await db()
+    .from("candidate_documents")
+    .select("storage_path")
+    .eq("candidate_id", candidateId)
+    .eq("kind", kind)
+    .maybeSingle();
+
+  const { error: upErr } = await db().storage
+    .from(DOCS_BUCKET)
+    .upload(path, file, { contentType: file.type || undefined, upsert: false });
+  if (upErr) throw upErr;
+
+  const userId = (await db().auth.getUser()).data.user?.id ?? null;
+
+  const { error } = await db().from("candidate_documents").upsert(
+    {
+      candidate_id: candidateId,
+      kind,
+      storage_path: path,
+      file_name: file.name,
+      file_size: file.size,
+      mime_type: file.type || null,
+      uploaded_by: userId,
+      uploaded_at: new Date().toISOString(),
+      // Состояние не задаём: его считает триггер. Новый файл — «на проверке»,
+      // пока кадровик не подтвердил.
+      verified_by: null,
+      verified_at: null,
+    },
+    { onConflict: "candidate_id,kind" },
+  );
+
+  if (error) {
+    // Строка не записалась — файл в хранилище не нужен: иначе он останется
+    // висеть без карточки, и никто уже не узнает, чей он.
+    await db().storage.from(DOCS_BUCKET).remove([path]);
+    throw error;
+  }
+
+  if (prev?.storage_path && prev.storage_path !== path) {
+    await db().storage.from(DOCS_BUCKET).remove([prev.storage_path]);
+  }
+}
+
+/**
+ * Временная ссылка на файл. Живёт минуту — этого хватает, чтобы открыть,
+ * и мало, чтобы переслать в чужой чат «на посмотреть».
+ */
+export async function documentFileUrl(storagePath: string): Promise<string> {
+  if (isDemoMode) throw new Error("В демо-режиме файлов нет.");
+  const { data, error } = await db().storage
+    .from(DOCS_BUCKET)
+    .createSignedUrl(storagePath, 60);
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+/** Убрать файл, оставив саму отметку: документ снова «не загружен». */
+export async function removeCandidateDocumentFile(documentId: string, storagePath: string) {
+  if (isDemoMode) throw new Error("В демо-режиме файлов нет.");
+
+  const { error } = await db().from("candidate_documents").update({
+    storage_path: null, file_name: null, file_size: null, mime_type: null,
+    verified_by: null, verified_at: null,
+  }).eq("id", documentId);
+  if (error) throw error;
+
+  await db().storage.from(DOCS_BUCKET).remove([storagePath]);
+}
+
+/**
+ * Кадровик подтверждает документ. Состояние после этого посчитает база:
+ * бессрочный станет «в порядке», истекающий через месяц — «истекает».
+ * Поэтому здесь проставляется только факт проверки, а не сам статус.
+ */
+export async function verifyCandidateDocument(documentId: string, expiresOn?: string | null) {
+  if (isDemoMode) throw new Error("В демо-режиме документы не проверяются.");
+  const userId = (await db().auth.getUser()).data.user?.id ?? null;
+  const patch: Record<string, unknown> = {
+    verified_by: userId,
+    verified_at: new Date().toISOString(),
+  };
+  if (expiresOn !== undefined) patch.expires_on = expiresOn;
+
+  const { error } = await db().from("candidate_documents").update(patch).eq("id", documentId);
+  if (error) throw error;
+}
+
+/** Заводит пустую отметку под документ, которого ещё нет в списке. */
+export async function addCandidateDocument(candidateId: string, kind: DocumentKind) {
+  if (isDemoMode) throw new Error("В демо-режиме документы не заводятся.");
+  const { error } = await db().from("candidate_documents")
+    .upsert({ candidate_id: candidateId, kind }, { onConflict: "candidate_id,kind" });
+  if (error) throw error;
 }

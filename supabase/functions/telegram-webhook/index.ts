@@ -184,7 +184,8 @@ async function route(bot: { id: string; token: string }, update: any) {
   }
 
   const text: string = update.message?.text ?? update.message?.caption ?? "";
-  if (!text) return;
+  const { saved, problems } = await saveIncomingFiles(ctx, update.message);
+  if (!text && saved.length === 0 && problems.length === 0) return;
 
   // Входящее пишем всегда: даже команда — это часть переписки, и рекрутер
   // должен видеть, что человек делал.
@@ -193,14 +194,187 @@ async function route(bot: { id: string; token: string }, update: any) {
     direction: "inbound",
     author_kind: "candidate",
     body: text,
+    attachments: saved,
     external_message_id: `tg:${chatId}:${update.message?.message_id ?? Date.now()}`,
     sent_at: new Date((update.message?.date ?? Math.floor(Date.now() / 1000)) * 1000).toISOString(),
     is_read: false,
   });
 
+  if (saved.length > 0 || problems.length > 0) {
+    const asResume = saved.length > 0 && await maybeSaveAsResume(candidateId, saved);
+    const lines: string[] = [];
+    if (saved.length > 0) {
+      lines.push(saved.length === 1 ? "Файл получил." : `Получил файлов: ${saved.length}.`);
+      if (asResume) lines.push("Сохранил как ваше резюме.");
+      lines.push("Рекрутер увидит его в вашей карточке.");
+    }
+    for (const p of problems) lines.push(p);
+    await reply(ctx, lines.join(" "));
+    // Подпись к файлу командой не бывает: разбирать дальше нечего.
+    if (!text.startsWith("/")) return;
+  }
+
   if (isNew || text.startsWith("/start")) return onStart(ctx);
   if (text.startsWith("/")) return onCommand(ctx, text.split(/[\s@]/)[0]);
   return onPlainText(ctx, text);
+}
+
+// ---------------------------------------------------------------------------
+// Файлы из переписки
+//
+// Кандидат присылает резюме, скан диплома и фото трудовой прямо в чат — это
+// самый естественный для него способ. Раньше такое сообщение уходило в
+// никуда: бот просил «пришлите сюда», но сохранить не мог.
+//
+// Всё, что пришло, ложится в то же хранилище, что и документы из карточки, и
+// под тем же путём — от id кандидата. Значит, права на файл из чата и на скан
+// из карточки считаются одинаково, второе правило заводить не нужно.
+// ---------------------------------------------------------------------------
+const DOCS_BUCKET = "candidate-docs";
+const MAX_FILE = 15 * 1024 * 1024;
+
+type Incoming = { fileId: string; name: string; mime: string | null; size: number | null };
+type Saved = { path: string; name: string; size: number; mime: string | null };
+
+function filesFrom(msg: any): Incoming[] {
+  const out: Incoming[] = [];
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+
+  if (msg?.document) {
+    out.push({
+      fileId: msg.document.file_id,
+      name: msg.document.file_name ?? `документ-${stamp}`,
+      mime: msg.document.mime_type ?? null,
+      size: msg.document.file_size ?? null,
+    });
+  }
+
+  if (Array.isArray(msg?.photo) && msg.photo.length > 0) {
+    // Телеграм присылает лесенку размеров одной картинки. Берём самый
+    // большой: на мелком варианте скан паспорта не прочитать.
+    const best = msg.photo[msg.photo.length - 1];
+    out.push({ fileId: best.file_id, name: `фото-${stamp}.jpg`, mime: "image/jpeg", size: best.file_size ?? null });
+  }
+
+  if (msg?.voice) {
+    out.push({
+      fileId: msg.voice.file_id,
+      name: `голосовое-${stamp}.ogg`,
+      mime: msg.voice.mime_type ?? "audio/ogg",
+      size: msg.voice.file_size ?? null,
+    });
+  }
+
+  if (msg?.audio) {
+    out.push({
+      fileId: msg.audio.file_id,
+      name: msg.audio.file_name ?? `аудио-${stamp}.mp3`,
+      mime: msg.audio.mime_type ?? "audio/mpeg",
+      size: msg.audio.file_size ?? null,
+    });
+  }
+
+  if (msg?.video) {
+    out.push({
+      fileId: msg.video.file_id,
+      name: msg.video.file_name ?? `видео-${stamp}.mp4`,
+      mime: msg.video.mime_type ?? "video/mp4",
+      size: msg.video.file_size ?? null,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Забирает файлы у Телеграма и кладёт в хранилище.
+ *
+ * Ничего не выдумывает: чего не смог принять — называет вслух, чтобы человек
+ * не гадал, дошло или нет.
+ */
+async function saveIncomingFiles(ctx: Ctx, msg: any): Promise<{ saved: Saved[]; problems: string[] }> {
+  const saved: Saved[] = [];
+  const problems: string[] = [];
+
+  for (const f of filesFrom(msg)) {
+    if (f.size && f.size > MAX_FILE) {
+      problems.push(`«${f.name}» больше 15 МБ — такой файл я принять не могу.`);
+      continue;
+    }
+
+    const info = await tg(ctx.token, "getFile", { file_id: f.fileId });
+    if (!info.ok || !info.result?.file_path) {
+      // Телеграм отдаёт ботам файлы до 20 МБ, на большем отвечает отказом.
+      problems.push(`«${f.name}» скачать не удалось.`);
+      continue;
+    }
+
+    const res = await fetch(`https://api.telegram.org/file/bot${ctx.token}/${info.result.file_path}`);
+    if (!res.ok) {
+      problems.push(`«${f.name}» скачать не удалось.`);
+      continue;
+    }
+
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const ext = (String(info.result.file_path).split(".").pop() ?? "bin").toLowerCase().slice(0, 8);
+    const path = `${ctx.candidateId}/chat/${crypto.randomUUID()}.${ext}`;
+
+    const { error } = await supabase.storage.from(DOCS_BUCKET).upload(path, bytes, {
+      contentType: f.mime ?? "application/octet-stream",
+      upsert: false,
+    });
+
+    if (error) {
+      problems.push(`«${f.name}» не принят: ${error.message}`);
+      continue;
+    }
+
+    saved.push({ path, name: f.name, size: f.size ?? bytes.length, mime: f.mime });
+  }
+
+  return { saved, problems };
+}
+
+const RESUME_MIME = [
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/rtf",
+  "application/vnd.oasis.opendocument.text",
+];
+
+/**
+ * Первый присланный текстовый документ становится резюме — но только если
+ * резюме ещё нет. Перезаписывать молча нельзя: второй файл человек обычно
+ * шлёт в дополнение к первому, а не взамен.
+ */
+async function maybeSaveAsResume(candidateId: string, saved: Saved[]): Promise<boolean> {
+  const doc = saved.find((f) => f.mime && RESUME_MIME.includes(f.mime));
+  if (!doc) return false;
+
+  const { data: existing } = await supabase
+    .from("candidate_documents")
+    .select("id, storage_path")
+    .eq("candidate_id", candidateId)
+    .eq("kind", "resume")
+    .maybeSingle();
+
+  if (existing?.storage_path) return false;
+
+  const { error } = await supabase.from("candidate_documents").upsert(
+    {
+      candidate_id: candidateId,
+      kind: "resume",
+      storage_path: doc.path,
+      file_name: doc.name,
+      file_size: doc.size,
+      mime_type: doc.mime,
+      uploaded_at: new Date().toISOString(),
+    },
+    { onConflict: "candidate_id,kind" },
+  );
+
+  return !error;
 }
 
 // ---------------------------------------------------------------------------

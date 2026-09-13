@@ -41,7 +41,10 @@ values (
     'image/jpeg','image/png','image/heic','image/webp',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/rtf','application/vnd.oasis.opendocument.text','text/plain'
+    'application/rtf','application/vnd.oasis.opendocument.text','text/plain',
+    -- Голосовые и видео из Телеграма: кандидату часто проще наговорить,
+    -- чем набрать, а ответ на задание бывает записью.
+    'audio/ogg','audio/mpeg','audio/mp4','video/mp4','video/quicktime'
   ]
 )
 on conflict (id) do update
@@ -271,3 +274,36 @@ end;
 $fn$;
 
 revoke all on function public.anonymize_candidate(uuid, text) from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- 7. СОСТОЯНИЕ ДОКУМЕНТА ЗНАЕТ ПРО ФАЙЛ В ХРАНИЛИЩЕ
+--
+--    Триггер из миграции 03 считал документ отсутствующим, если пуст
+--    file_url. Он писался, когда файлы жили только внешними ссылками.
+--    Теперь их два источника, и «нет файла» означает, что пусты оба —
+--    иначе загруженный скан немедленно помечался бы как непринесённый.
+--
+--    Само правило не меняется: состояние считается, а не проставляется
+--    руками. Загрузили — «на проверке». Кадровик подтвердил — «в порядке»
+--    или «истекает», смотря по дате.
+-- ---------------------------------------------------------------------------
+create or replace function public.refresh_document_state()
+returns trigger language plpgsql set search_path = public
+as $fn$
+begin
+  if new.file_url is null and new.storage_path is null then
+    new.state := 'missing';
+  elsif new.verified_at is null then
+    new.state := 'pending';
+  elsif new.expires_on is null then
+    new.state := 'valid';
+  elsif new.expires_on < current_date then
+    new.state := 'expired';
+  elsif new.expires_on < current_date + 30 then
+    new.state := 'expiring';
+  else
+    new.state := 'valid';
+  end if;
+  return new;
+end;
+$fn$;

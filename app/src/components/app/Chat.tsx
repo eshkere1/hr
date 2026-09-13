@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Send } from "lucide-react";
+import { Bot, Paperclip, Send } from "lucide-react";
 import * as api from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { Button, Skeleton, Tag, Textarea } from "@/components/ui";
 import { cn, dateRu, timeRu } from "@/lib/utils";
-import type { Message } from "@/lib/types";
+import type { Message, MessageAttachment } from "@/lib/types";
 
 /**
  * Переписка с кандидатом.
@@ -102,6 +102,53 @@ export function ChatThread({
 }
 
 /**
+ * Вложения в сообщении.
+ *
+ * Файл не показывается сразу картинкой и не качается фоном: ссылка на него
+ * временная и выписывается в момент нажатия. Пока никто не открыл документ,
+ * никакой ссылки на скан паспорта не существует — даже недействующей.
+ */
+function Attachments({ list, dark }: { list: MessageAttachment[]; dark: boolean }) {
+  const [error, setError] = useState<string | null>(null);
+
+  async function open(path: string) {
+    setError(null);
+    try {
+      window.open(await api.documentFileUrl(path), "_blank", "noopener");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Файл не открылся");
+    }
+  }
+
+  return (
+    <div className="mt-[6px] flex flex-col gap-[4px]">
+      {list.map((a) => (
+        <button
+          key={a.path}
+          type="button"
+          onClick={() => open(a.path)}
+          className={cn(
+            "flex items-center gap-[6px] rounded-[8px] border px-[8px] py-[5px] text-left text-[12px]",
+            dark
+              ? "border-primary-foreground/30 text-primary-foreground hover:bg-primary-foreground/10"
+              : "border-border text-ink hover:bg-surface-2",
+          )}
+        >
+          <Paperclip className="h-[13px] w-[13px] shrink-0" />
+          <span className="truncate">{a.name}</span>
+          {a.size ? (
+            <span className={cn("shrink-0 font-mono text-[10px]", dark ? "text-primary-foreground/70" : "text-ink-3")}>
+              {Math.max(1, Math.round(a.size / 1024))} КБ
+            </span>
+          ) : null}
+        </button>
+      ))}
+      {error && <span className="text-[11px] text-crit">{error}</span>}
+    </div>
+  );
+}
+
+/**
  * Три вида пузырей. Сообщение ассистента помечено пунктиром и подписью:
  * человек всегда должен понимать, с кем говорит.
  */
@@ -130,7 +177,8 @@ function Bubble({ m, showAuthor }: { m: Message; showAuthor: boolean }) {
           {isAi ? "ассистент" : m.author_name}
         </span>
       )}
-      <span className="whitespace-pre-wrap break-words">{m.body}</span>
+      {m.body && <span className="whitespace-pre-wrap break-words">{m.body}</span>}
+      {(m.attachments ?? []).length > 0 && <Attachments list={m.attachments!} dark={isOut && !isAi} />}
       <time
         className={cn(
           "mt-[3px] block text-right font-mono text-[10px]",

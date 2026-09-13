@@ -107,6 +107,7 @@ export const PRIORITY_LABEL: Record<VacancyPriority, string> = {
  * зашитый в код список: у курьера, бухгалтера и врача он разный.
  */
 export type DocumentKind =
+  | "resume"
   | "passport"
   | "snils"
   | "inn"
@@ -119,6 +120,7 @@ export type DocumentKind =
   | "other";
 
 export const DOCUMENT_LABEL: Record<DocumentKind, string> = {
+  resume: "Резюме",
   passport: "Паспорт",
   snils: "СНИЛС",
   inn: "ИНН",
@@ -345,6 +347,7 @@ export interface Message {
   author_name: string | null;
   body: string;
   sent_at: string;
+  attachments?: MessageAttachment[];
 }
 
 export interface Interview {
@@ -379,6 +382,20 @@ export interface CandidateDocument {
   kind: DocumentKind;
   state: DocumentState;
   expires_on: string | null;
+  /** Путь в хранилище. Пусто — отметка есть, файла нет (и весь демо-режим). */
+  storage_path?: string | null;
+  file_name?: string | null;
+  file_size?: number | null;
+  mime_type?: string | null;
+  verified_at?: string | null;
+}
+
+/** Вложение в переписке: то же хранилище, другой повод. */
+export interface MessageAttachment {
+  path: string;
+  name: string;
+  size?: number;
+  mime?: string;
 }
 
 export interface Note {

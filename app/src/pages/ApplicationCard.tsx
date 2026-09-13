@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Bot, Check, HelpCircle, Minus, X as XIcon, Sparkles,
@@ -13,9 +13,10 @@ import {
 } from "@/components/ui";
 import { CriteriaMeter, SlaIndicator, StageChip } from "@/components/app/primitives";
 import { SelfBooking } from "./Calendar";
-import { CHECK_ASPECTS, DOCUMENT_LABEL } from "@/lib/types";
+import { CHECK_ASPECTS, DOCUMENT_LABEL, type DocumentKind } from "@/lib/types";
 import { SOURCE_LABEL, type CriteriaResult, type CriterionResult } from "@/lib/types";
 import { cn, dateRu, dateTimeRu, money } from "@/lib/utils";
+import { isDemoMode } from "@/lib/supabase";
 
 const TABS = [
   { id: "profile", label: "Профиль" },
@@ -568,40 +569,198 @@ const DOC_STATE_VIEW = {
 
 function DocsTab({ candidateId }: { candidateId: string }) {
   const docs = useAsync(() => api.listDocuments(candidateId), [candidateId]);
+  const { can } = useAuth();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState("");
+
+  // Право решает база, но показывать кнопку, которая заведомо ответит
+  // отказом, незачем: руководитель вакансии документы читает, а собирает их
+  // кадровик.
+  const mayEdit = can("hr_manager", "superuser");
+
+  async function run(key: string, fn: () => Promise<unknown>) {
+    setBusy(key);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не получилось");
+    } finally {
+      setBusy(null);
+      docs.reload();
+    }
+  }
+
+  async function open(path: string) {
+    setError(null);
+    try {
+      window.open(await api.documentFileUrl(path), "_blank", "noopener");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Файл не открылся");
+    }
+  }
+
   if (docs.loading) return <Skeleton className="h-40 w-full" />;
 
   const list = docs.data ?? [];
-  if (list.length === 0) {
-    return (
-      <Card>
-        <p className="m-0 text-[13.5px] text-ink-2">
-          Документы ещё не загружены. Кандидат может прислать их прямо в чат бота.
-          Какие из них обязательны, задаётся в вакансии.
-        </p>
-      </Card>
-    );
-  }
+  const missingKinds = (Object.keys(DOCUMENT_LABEL) as DocumentKind[])
+    .filter((k) => !list.some((d) => d.kind === k));
 
   return (
-    <Card className="flex flex-col gap-3">
-      {list.map((d) => {
-        const view = DOC_STATE_VIEW[d.state];
-        return (
-          <div
-            key={d.id}
-            className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3 last:border-0 last:pb-0"
+    <div className="flex flex-col gap-3">
+      {error && (
+        <p className="m-0 rounded-md border border-crit-soft bg-crit-soft px-[10px] py-2 text-[12.5px] text-crit">
+          {error}
+        </p>
+      )}
+
+      {isDemoMode && (
+        <Card className="border-l-[3px] border-l-warn">
+          <p className="m-0 text-[13.5px] text-ink-2">
+            Демо-режим: файлы показываются как отметки. Хранилище живёт в базе,
+            здесь его нет.
+          </p>
+        </Card>
+      )}
+
+      {list.length === 0 ? (
+        <Card>
+          <p className="m-0 text-[13.5px] text-ink-2">
+            Документов пока нет. Кандидат может прислать их прямо в чат бота,
+            а кадровик — добавить сюда файлом. Какие из них обязательны,
+            задаётся в вакансии.
+          </p>
+        </Card>
+      ) : (
+        <Card className="flex flex-col gap-3">
+          {list.map((d) => {
+            const view = DOC_STATE_VIEW[d.state];
+            const hasFile = Boolean(d.storage_path);
+            return (
+              <div
+                key={d.id}
+                className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3 last:border-0 last:pb-0"
+              >
+                <div className="min-w-0">
+                  <div className="text-[13.5px] font-medium">{DOCUMENT_LABEL[d.kind]}</div>
+                  {hasFile ? (
+                    <div className="truncate text-[11.5px] text-ink-3">
+                      {d.file_name}
+                      {d.file_size ? ` · ${Math.max(1, Math.round(d.file_size / 1024))} КБ` : ""}
+                    </div>
+                  ) : (
+                    <div className="text-[11.5px] text-ink-3">файла нет</div>
+                  )}
+                  {d.expires_on && (
+                    <div className="font-mono text-[11.5px] text-ink-3">до {dateRu(d.expires_on)}</div>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Tag tone={view.tone}>{view.label}</Tag>
+
+                  {hasFile && (
+                    <Button size="sm" variant="ghost" onClick={() => open(d.storage_path!)}>
+                      Открыть
+                    </Button>
+                  )}
+
+                  {mayEdit && d.state === "pending" && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy === d.id}
+                      onClick={() => run(d.id, () => api.verifyCandidateDocument(d.id))}
+                    >
+                      <Check className="h-4 w-4" /> Проверил
+                    </Button>
+                  )}
+
+                  {mayEdit && (
+                    <FilePick
+                      label={hasFile ? "Заменить" : "Загрузить"}
+                      busy={busy === d.id}
+                      onPick={(file) =>
+                        run(d.id, () => api.uploadCandidateDocument(candidateId, d.kind, file))
+                      }
+                    />
+                  )}
+
+                  {mayEdit && hasFile && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy === d.id}
+                      onClick={() => run(d.id, () => api.removeCandidateDocumentFile(d.id, d.storage_path!))}
+                    >
+                      <XIcon className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {mayEdit && missingKinds.length > 0 && (
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label="Добавить документ" className="max-w-[280px]">
+            <Select value={adding} onChange={(e) => setAdding(e.target.value)}>
+              <option value="">Выберите вид</option>
+              {missingKinds.map((k) => (
+                <option key={k} value={k}>{DOCUMENT_LABEL[k]}</option>
+              ))}
+            </Select>
+          </Field>
+          <Button
+            size="sm"
+            disabled={!adding || busy === "add"}
+            onClick={() => run("add", async () => {
+              await api.addCandidateDocument(candidateId, adding as DocumentKind);
+              setAdding("");
+            })}
           >
-            <div>
-              <div className="text-[13.5px] font-medium">{DOCUMENT_LABEL[d.kind]}</div>
-              {d.expires_on && (
-                <div className="font-mono text-[11.5px] text-ink-3">до {dateRu(d.expires_on)}</div>
-              )}
-            </div>
-            <Tag tone={view.tone}>{view.label}</Tag>
-          </div>
-        );
-      })}
-    </Card>
+            Добавить
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Выбор файла кнопкой.
+ *
+ * Отдельным компонентом, потому что настоящий input[type=file] стилизовать
+ * нельзя — его прячут и кликают по нему из обработчика кнопки.
+ */
+function FilePick({
+  label, busy, onPick,
+}: {
+  label: string;
+  busy: boolean;
+  onPick: (file: File) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={ref}
+        type="file"
+        className="hidden"
+        accept=".pdf,.jpg,.jpeg,.png,.heic,.webp,.doc,.docx,.rtf,.odt,.txt"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = "";
+          if (f) onPick(f);
+        }}
+      />
+      <Button size="sm" variant="ghost" disabled={busy || isDemoMode} onClick={() => ref.current?.click()}>
+        {busy ? "…" : label}
+      </Button>
+    </>
   );
 }
 
