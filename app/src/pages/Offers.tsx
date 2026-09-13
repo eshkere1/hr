@@ -7,7 +7,6 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button, Card, Field, Input, Modal, Skeleton, Tag, Textarea } from "@/components/ui";
 import { EmptyState, PageHeader } from "@/components/app/primitives";
 import { renderTemplate } from "@/lib/matching";
-import { offerTemplate } from "@/lib/demoData";
 import { OFFER_STATUS_LABEL, type Offer, type OfferStatus } from "@/lib/types";
 import { dateRu, money } from "@/lib/utils";
 
@@ -235,6 +234,8 @@ function NewOfferModal({
   const { profile } = useAuth();
   const applications = useAsync(() => api.listApplications(), []);
   const vacancies = useAsync(() => api.listVacancies(), []);
+  const stages = useAsync(() => api.listStages(), []);
+  const template = useAsync(() => api.getOfferTemplate(), []);
 
   const [applicationId, setApplicationId] = useState("");
   const [salary, setSalary] = useState("");
@@ -242,9 +243,15 @@ function NewOfferModal({
   const [respondBy, setRespondBy] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // На оффер имеет смысл звать тех, кто дошёл до последних этапов
+  // На оффер имеет смысл звать тех, кто дошёл до последних этапов.
+  // Сравниваем по коду этапа, а не по его id: id воронки в настоящей базе —
+  // uuid, и зашитые «s5», «s6» из демо-набора не совпадали там ни с чем,
+  // отчего список кандидатов на оффер всегда оставался пустым.
+  const lateStageIds = (stages.data ?? [])
+    .filter((st) => ["practical", "offer"].includes(st.code))
+    .map((st) => st.id);
   const eligible = (applications.data ?? []).filter(
-    (a) => a.status === "active" && ["s5", "s6"].includes(a.stage_id),
+    (a) => a.status === "active" && lateStageIds.includes(a.stage_id),
   );
   const app = eligible.find((a) => a.id === applicationId) ?? eligible[0];
   const vacancy = (vacancies.data ?? []).find((v) => v.id === app?.vacancy_id);
@@ -253,8 +260,8 @@ function NewOfferModal({
   const salaryNum = Number(salary) || band?.salary_max || 0;
   const overBand = band?.salary_max ? salaryNum - band.salary_max : 0;
 
-  const body = app
-    ? renderTemplate(offerTemplate, {
+  const body = app && template.data
+    ? renderTemplate(template.data, {
         candidate_name: app.candidate_name,
         position: vacancy?.title ?? "",
         department: vacancy?.department_name ?? "",

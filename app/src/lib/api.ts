@@ -127,12 +127,47 @@ function translateAuthError(message: string): string {
 // СПРАВОЧНИКИ
 // ===========================================================================
 
-export async function listStages(pipelineId = "p1"): Promise<PipelineStage[]> {
-  if (isDemoMode) return demo.stages.filter((s) => s.pipeline_id === pipelineId);
+/**
+ * Воронка по умолчанию.
+ *
+ * Раньше значением по умолчанию у listStages стояло "p1" — идентификатор из
+ * демо-набора. На настоящей базе id воронки это uuid, и запрос отвечал
+ * «invalid input syntax for type uuid: "p1"», а вместе с ним падали пять
+ * экранов, которые спрашивают этапы без аргумента.
+ *
+ * Ответ не меняется от вызова к вызову, а спрашивают его почти все экраны,
+ * поэтому он запоминается на время жизни вкладки.
+ */
+const DEMO_PIPELINE_ID = "p1";
+let defaultPipelineId: string | null = null;
+
+async function getDefaultPipelineId(): Promise<string> {
+  if (isDemoMode) return DEMO_PIPELINE_ID;
+  if (defaultPipelineId) return defaultPipelineId;
+  const { data, error } = await db()
+    .from("pipelines")
+    .select("id")
+    .eq("is_default", true)
+    .eq("is_active", true)
+    .order("created_at")
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data)
+    throw new Error(
+      "В базе нет воронки по умолчанию. Примените sql/06_seed.sql — он заводит воронку «Специалист».",
+    );
+  defaultPipelineId = data.id as string;
+  return defaultPipelineId;
+}
+
+export async function listStages(pipelineId?: string): Promise<PipelineStage[]> {
+  const id = pipelineId ?? (await getDefaultPipelineId());
+  if (isDemoMode) return demo.stages.filter((s) => s.pipeline_id === id);
   const { data, error } = await db()
     .from("pipeline_stages")
     .select("id, pipeline_id, code, name, order_index, color_token, sla_hours, is_terminal")
-    .eq("pipeline_id", pipelineId)
+    .eq("pipeline_id", id)
     .order("order_index");
   if (error) throw error;
   return data as PipelineStage[];
@@ -951,6 +986,27 @@ export async function listOffers(): Promise<Offer[]> {
   }));
 }
 
+/**
+ * Шаблон оффера.
+ *
+ * Лежит в базе: текст предложения о работе — то, что компания меняет под
+ * себя, и переразвёртывать ради него приложение незачем. Таблица
+ * `offer_templates` засеяна миграцией 06; если её опустошили, остаётся
+ * встроенный текст — оффер нужно уметь выписать в любом случае.
+ */
+export async function getOfferTemplate(): Promise<string> {
+  if (isDemoMode) return demo.offerTemplate;
+  const { data, error } = await db()
+    .from("offer_templates")
+    .select("body_md")
+    .eq("is_active", true)
+    .order("created_at")
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.body_md as string) ?? demo.offerTemplate;
+}
+
 export async function getOfferForApplication(applicationId: string): Promise<Offer | null> {
   const all = await listOffers();
   return all.find((o) => o.application_id === applicationId) ?? null;
@@ -1333,9 +1389,20 @@ export async function listReferrals(): Promise<Referral[]> {
   }));
 }
 
+/**
+ * Рекомендация знакомого (фишка 60).
+ *
+ * В базе это одна функция `submit_referral`: завести кандидата обычный
+ * сотрудник по политикам не может — и не должен, иначе базу пополняет кто
+ * угодно чем угодно. Функция делает три шага от имени владельца: находит
+ * или заводит кандидата по контакту, вешает реферала на вошедшего и
+ * сохраняет объяснение заметкой в карточке. Миграция sql/15_referrals.sql.
+ */
 export async function createReferral(input: {
   referrer_name: string;
   referred_name: string;
+  contact: string;
+  why?: string | null;
   vacancy_title: string | null;
 }): Promise<void> {
   if (isDemoMode) {
@@ -1353,9 +1420,13 @@ export async function createReferral(input: {
     ];
     return;
   }
-  throw new Error(
-    "В настоящей базе рекомендация заводится вместе с карточкой кандидата: сначала кандидат, потом реферал на него.",
-  );
+  const { error } = await db().rpc("submit_referral", {
+    _name: input.referred_name,
+    _contact: input.contact,
+    _why: input.why ?? null,
+    _vacancy_title: input.vacancy_title,
+  });
+  if (error) throw new Error(error.message);
 }
 
 // ===========================================================================

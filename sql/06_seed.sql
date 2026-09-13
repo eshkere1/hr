@@ -182,13 +182,13 @@ insert into public.offer_templates (name, body_md) values
 
 Мы предлагаем вам позицию **{{position}}** в подразделении «{{department}}».
 
-- Зарплата на руки: **{{salary}} ₽**
+- Зарплата на руки: **{{salary}}**
 - Формат: {{work_format}}, {{weekly_hours}} часов в неделю
 - Дата выхода: {{start_date}}
-- Испытательный срок: {{probation_months}} мес.
+- Испытательный срок: {{probation}} мес.
 
 Что реально будет в первый месяц:
-{{first_month_reality}}
+{{first_month}}
 
 Ответ ждём до {{respond_by}}. Ответить можно прямо в этом чате.')
 on conflict do nothing;

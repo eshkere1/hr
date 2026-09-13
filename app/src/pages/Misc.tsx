@@ -280,6 +280,8 @@ function ReferralModal({
               await api.createReferral({
                 referrer_name: referrerName,
                 referred_name: name.trim(),
+                contact: contact.trim(),
+                why: why.trim() || null,
                 vacancy_title: vacancyTitle || null,
               });
               setBusy(false);
