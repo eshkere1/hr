@@ -254,7 +254,7 @@ export function AppLayout() {
           <div className="flex flex-col gap-3 border-t border-border pt-4">
             {isDemoMode && !collapsed && (
               <div className="rounded-md border border-warn-soft bg-warn-soft px-[10px] py-2 text-[11.5px] leading-snug text-warn">
-                Демо-режим: данные встроенные. Подключите Supabase в <code className="font-mono">.env</code>, чтобы работать с базой.
+                Демо-режим: данные встроенные, изменения живут до перезагрузки страницы. С ключами Supabase в <code className="font-mono">.env</code> то же приложение идёт в базу.
               </div>
             )}
             <div className={cn("flex items-center gap-[10px]", collapsed && "justify-center")}>
