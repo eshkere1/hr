@@ -73,3 +73,64 @@ revoke all on function public.forget_candidate_files(uuid) from public, anon, au
 
 comment on function public.forget_candidate_files is
   'Ставит файлы кандидата в очередь на удаление из хранилища. Сама не удаляет: платформа запрещает удаление из storage напрямую.';
+
+-- ---------------------------------------------------------------------------
+-- Строгое «нет» вместо «неизвестно»
+--
+-- Проверил функции доступа из-под постороннего вошедшего пользователя, и они
+-- ответили не false, а null: у человека без профиля my_candidate_id() пуст,
+-- сравнение с ним даёт неизвестность, и вся цепочка ИЛИ становится null.
+--
+-- Для политики это тот же отказ — RLS пускает только по true. Но правило
+-- «нас спасает то, что null не равен true» слишком тонкое, чтобы на нём
+-- стоять: достаточно кому-нибудь написать not can_see_...(x) — и получится
+-- дыра, потому что not null это снова null, а не «да».
+--
+-- Функция обязана отвечать «да» или «нет».
+-- ---------------------------------------------------------------------------
+create or replace function public.can_see_candidate_files(_folder text)
+returns boolean
+language plpgsql stable security definer set search_path = public
+as $fn$
+declare
+  v_id uuid;
+begin
+  begin
+    v_id := _folder::uuid;
+  exception when others then
+    return false;
+  end;
+
+  return coalesce(public.is_hr(), false)
+      or coalesce(public.is_director(), false)
+      or coalesce(v_id = public.my_candidate_id(), false)
+      or exists (
+        select 1 from public.applications a
+        where a.candidate_id = v_id
+          and public.can_see_vacancy(a.vacancy_id)
+      );
+end
+$fn$;
+
+create or replace function public.can_edit_candidate_files(_folder text)
+returns boolean
+language plpgsql stable security definer set search_path = public
+as $fn$
+declare
+  v_id uuid;
+begin
+  begin
+    v_id := _folder::uuid;
+  exception when others then
+    return false;
+  end;
+
+  return coalesce(public.is_hr(), false)
+      or coalesce(v_id = public.my_candidate_id(), false);
+end
+$fn$;
+
+revoke all on function public.can_see_candidate_files(text)  from public, anon;
+revoke all on function public.can_edit_candidate_files(text) from public, anon;
+grant execute on function public.can_see_candidate_files(text)  to authenticated;
+grant execute on function public.can_edit_candidate_files(text) to authenticated;
