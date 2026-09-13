@@ -2362,3 +2362,20 @@ export async function addCandidateDocument(candidateId: string, kind: DocumentKi
     .upsert({ candidate_id: candidateId, kind }, { onConflict: "candidate_id,kind" });
   if (error) throw error;
 }
+
+/**
+ * Просит убрать файлы, помеченные к удалению.
+ *
+ * Обезличивание кандидата ставит его файлы в очередь: удалять из хранилища
+ * прямо из базы платформа не даёт, и правильно делает — строку убрать легко,
+ * а байты остались бы навсегда. Очередь разбирает серверная функция.
+ *
+ * Зовём молча при входе кадровика. Право на забвение не должно зависеть от
+ * того, вспомнил ли кто-то нажать кнопку.
+ */
+export async function purgeQueuedFiles(): Promise<{ убрано: number; осталось: number }> {
+  if (isDemoMode) return { убрано: 0, осталось: 0 };
+  const { data, error } = await db().functions.invoke("storage-purge", { body: {} });
+  if (error) throw error;
+  return data;
+}

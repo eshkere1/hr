@@ -8,6 +8,7 @@ import {
   UserCheck, Award, CalendarRange, Globe,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import * as api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ROLE_LABEL, type AppRole } from "@/lib/types";
 import { isDemoMode } from "@/lib/supabase";
@@ -129,6 +130,18 @@ export function AppLayout() {
       /* приватный режим — просто оставляем развёрнутым */
     }
   }, []);
+
+  // Уборка файлов, помеченных к удалению. Обезличивание ставит их в очередь,
+  // а разобрать её может только серверная функция: из базы удалять файлы
+  // платформа не даёт. Зовём молча при входе кадровика — право на забвение
+  // не должно зависеть от того, вспомнил ли кто-то нажать кнопку.
+  useEffect(() => {
+    if (isDemoMode) return;
+    if (!roles.includes("hr_manager") && !roles.includes("superuser")) return;
+    void api.purgeQueuedFiles().catch(() => {
+      /* Очередь подождёт следующего входа: терять из-за неё сессию незачем. */
+    });
+  }, [roles]);
 
   function toggleCollapsed() {
     setCollapsed((v) => {
