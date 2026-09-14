@@ -10,9 +10,8 @@
 #
 # Что задать в Settings → Secrets and variables → Actions:
 #
-#   DATABASE_URL       строка подключения к базе (Supabase → Connect →
-#                      Session pooler). Внутри пароль базы — поэтому только
-#                      секретом и никогда в коде.
+#   DB_PASSWORD        пароль базы. Только он: адрес, порт, пользователя
+#                      и имя базы секретить не от кого, они прописаны ниже.
 #   BACKUP_PASSPHRASE  пароль шифрования выгрузки. Без него копия — это
 #                      персональные данные, лежащие у стороннего хранилища
 #                      открытым текстом.
@@ -31,7 +30,7 @@
 # Проверить восстановление нужно ОДИН РАЗ вручную, до того как понадобится:
 #
 #   gpg --decrypt rastim-2026-09-13.sql.gpg > dump.sql
-#   psql "$DATABASE_URL_ЗАПАСНОЙ_БАЗЫ" -f dump.sql
+#   psql -h <адрес запасной базы> -U postgres -d postgres -f dump.sql
 #
 # Копия, которую ни разу не разворачивали, — это надежда, а не копия.
 
@@ -51,11 +50,11 @@ jobs:
       - name: Проверить, что есть чем работать
         id: check
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
           S3_KEY: ${{ secrets.S3_ACCESS_KEY }}
         run: |
-          if [ -z "$DATABASE_URL" ] || [ -z "$BACKUP_PASSPHRASE" ] || [ -z "$S3_KEY" ]; then
+          if [ -z "$DB_PASSWORD" ] || [ -z "$BACKUP_PASSPHRASE" ] || [ -z "$S3_KEY" ]; then
             echo "Секреты не заданы — копия не снимается. Это не ошибка."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
@@ -65,12 +64,27 @@ jobs:
       - name: Снять выгрузку
         if: steps.check.outputs.ready == 'true'
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
+          # Пароль идёт отдельной переменной, а не внутри строки подключения.
+          # Первая попытка была со строкой, и pg_dump споткнулся о символ «@»
+          # в пароле: разборщик принял хвост пароля за адрес, а следующий
+          # кусок — за номер порта. Хуже того, обрывок пароля попал в текст
+          # ошибки, а логи открытого репозитория видны всем. PGPASSWORD на
+          # части не разбирается и в сообщения об ошибках не попадает.
+          #
+          # Порт 5432 — session pooler. Через transaction pooler (6543)
+          # pg_dump не работает, а прямое подключение к db.<ref>.supabase.co
+          # доступно только по IPv6, которого у машин GitHub нет.
+          #
           # Версия pg_dump должна быть не старше сервера, иначе он откажется
           # выгружать. Поэтому контейнер, а не то, что стоит на раннере.
-          docker run --rm -e DATABASE_URL="$DATABASE_URL" postgres:17-alpine \
-            pg_dump --no-owner --no-privileges --clean --if-exists "$DATABASE_URL" \
+          docker run --rm -e PGPASSWORD postgres:17-alpine \
+            pg_dump --no-owner --no-privileges --clean --if-exists \
+              -h aws-1-eu-west-1.pooler.supabase.com \
+              -p 5432 \
+              -U postgres.bzsujgcsavopvgobqsus \
+              -d postgres \
             > dump.sql
           echo "Размер выгрузки: $(du -h dump.sql | cut -f1)"
 
