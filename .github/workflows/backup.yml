@@ -16,10 +16,13 @@
 #   BACKUP_PASSPHRASE  пароль шифрования выгрузки. Без него копия — это
 #                      персональные данные, лежащие у стороннего хранилища
 #                      открытым текстом.
-#   S3_ENDPOINT        адрес хранилища, например https://s3.twcstorage.ru
-#   S3_BUCKET          имя корзины
-#   S3_ACCESS_KEY      ключ доступа
-#   S3_SECRET_KEY      секретный ключ
+#   S3_ACCESS_KEY      S3 Admin Access Key из панели Timeweb
+#   S3_SECRET_KEY      S3 Admin Secret Key оттуда же
+#
+# Адрес хранилища и имя корзины секретами не являются — знание имени
+# приватной корзины доступа к ней не даёт, — поэтому они прописаны ниже
+# и вводить их не нужно. Если корзину заведёте другую, переопределите
+# секретами S3_ENDPOINT и S3_BUCKET.
 #
 # Хранилище берите российское, если работаете с российскими кандидатами:
 # выгрузка — это те же персональные данные, и правило об их размещении
@@ -50,9 +53,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_KEY: ${{ secrets.S3_ACCESS_KEY }}
         run: |
-          if [ -z "$DATABASE_URL" ] || [ -z "$BACKUP_PASSPHRASE" ] || [ -z "$S3_BUCKET" ]; then
+          if [ -z "$DATABASE_URL" ] || [ -z "$BACKUP_PASSPHRASE" ] || [ -z "$S3_KEY" ]; then
             echo "Секреты не заданы — копия не снимается. Это не ошибка."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
@@ -87,8 +90,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_KEY }}
           AWS_DEFAULT_REGION: ru-1
-          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT || 'https://s3.twcstorage.ru' }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET || 'rastim-backups' }}
         run: |
           FILE="rastim-$(date -u +%F).sql.gpg"
           aws s3 cp "$FILE" "s3://$S3_BUCKET/backups/$FILE" --endpoint-url "$S3_ENDPOINT"
@@ -100,8 +103,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_KEY }}
           AWS_DEFAULT_REGION: ru-1
-          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT || 'https://s3.twcstorage.ru' }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET || 'rastim-backups' }}
         run: |
           # Хранить вечно — значит держать персональные данные дольше, чем
           # разрешено самим себе же в политике сроков. Два месяца достаточно,
