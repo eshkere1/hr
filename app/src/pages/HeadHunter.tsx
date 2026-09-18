@@ -195,31 +195,62 @@ export function HhCallback() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
+  const [details, setDetails] = useState<string | null>(null);
 
   useEffect(() => {
     const code = params.get("code");
     const denied = params.get("error");
 
     if (denied) {
-      setError("Доступ не выдан. Без него публиковать вакансии на hh не получится.");
+      // Показываем ровно то, что ответил hh. Своя обобщённая фраза вместо
+      // его текста уже один раз стоила вечера разбирательств: «доступ не
+      // выдан» одинаково выглядит и когда человек нажал «отклонить», и
+      // когда не сошёлся адрес возврата, и когда приложению не хватает
+      // прав. Диагноз пишет источник, а не мы.
+      setError(HH_ERROR[denied] ?? "hh отказал в доступе.");
+      setDetails(
+        [
+          `код: ${denied}`,
+          params.get("error_description") ? `hh пишет: ${params.get("error_description")}` : null,
+        ].filter(Boolean).join(" · "),
+      );
       return;
     }
+
     if (!code) {
       setError("hh не прислал код авторизации. Попробуйте подключить заново.");
+      setDetails(null);
       return;
     }
 
     api.finishHhConnect(code, params.get("state"))
       .then(() => navigate("/hh", { replace: true }))
-      .catch((e) => setError(e instanceof Error ? e.message : "Не удалось подключить"));
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "Не удалось подключить");
+        setDetails(null);
+      });
   }, [params, navigate]);
 
   return (
     <>
       <PageHeader eyebrow="hh.ru" title={error ? "Не подключилось" : "Подключаем…"} />
       {error ? (
-        <Card className="max-w-[62ch] border-l-[3px] border-l-crit">
-          <p className="m-0 mb-3 text-[13.5px] text-ink-2">{error}</p>
+        <Card className="max-w-[72ch] border-l-[3px] border-l-crit">
+          <p className="m-0 mb-2 text-[13.5px] text-ink-2">{error}</p>
+
+          {details && (
+            <p className="m-0 mb-3 rounded-md border border-border bg-surface-2 px-[10px] py-2 font-mono text-[12px] text-ink-3">
+              {details}
+            </p>
+          )}
+
+          <p className="m-0 mb-3 text-[12.5px] text-ink-3">
+            Что проверить в кабинете приложения на dev.hh.ru: адрес возврата
+            должен совпадать с этим символ в символ —{" "}
+            <span className="font-mono">{window.location.origin}/auth/hh/callback</span>{" "}
+            — а входить нужно учётной записью сотрудника компании, не соискателя.
+          </p>
+
           <Button onClick={() => navigate("/hh")}>Вернуться к настройке</Button>
         </Card>
       ) : (
@@ -228,6 +259,30 @@ export function HhCallback() {
     </>
   );
 }
+
+/**
+ * Коды, которыми отвечает hh при отказе.
+ *
+ * Перевод не украшательство: «invalid_client» человеку не говорит ничего,
+ * а «приложение не узнало себя — проверьте Client Id» отправляет его ровно
+ * туда, где ошибка.
+ */
+const HH_ERROR: Record<string, string> = {
+  access_denied:
+    "Вы отклонили запрос доступа — или hh счёл, что эта учётная запись не может им распоряжаться. " +
+    "Входить нужно сотрудником компании: у соискательского аккаунта таких прав нет.",
+  invalid_client:
+    "hh не узнал приложение. Обычно это несовпадение Client Id: после перевыпуска ключей " +
+    "в секретах проекта должен лежать новый, а не прежний.",
+  invalid_request:
+    "hh не принял сам запрос. Чаще всего это адрес возврата: он сверяется целиком, " +
+    "и лишний слэш в конце уже расхождение.",
+  redirect_uri_mismatch:
+    "Адрес возврата не совпал с тем, что указан в кабинете приложения. Сверять надо символ в символ.",
+  unauthorized_client:
+    "Приложению не разрешено запрашивать этот доступ. Проверьте в кабинете на dev.hh.ru, " +
+    "что заявка одобрена именно для работодателей.",
+};
 
 /**
  * Блок публикации в карточке вакансии.
