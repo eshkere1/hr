@@ -20,7 +20,7 @@ import type {
   DashboardStats, DocumentKind, FunnelRow, Interview, InterviewSlot, MessengerBot,
   Message, Note, Offer, OfferStatus, PipelineStage, PracticalCheck, Profile, Referral,
   RejectionReason, Requisition, SalaryGap, SlaBreach, TeamOpinion, UrgentNeed, Vacancy,
-  VacancyApproval, VacancyCriterion, VacancyVersion, WorkFormat,
+  VacancyApproval, VacancyCriterion, VacancyInput, VacancyVersion, WorkFormat,
   Employee, OnboardingTask, IdpPlan, ProbationReview, HiringSatisfaction,
   LearningMaterial, Mentorship, PeopleCheckpoint, SeasonalityRow,
 } from "./types";
@@ -751,6 +751,67 @@ export async function createRequisition(input: RequisitionInput, authorName: str
     .single();
   if (error) throw error;
   return data.id;
+}
+
+/**
+ * Открыть вакансию.
+ *
+ * Заводится сразу опубликованной, а не черновиком: человек, у которого есть
+ * право её создать, для того её и создаёт. Согласование в системе есть, но
+ * оно для заявок от руководителей, а не для того, кто сам за подбор отвечает.
+ *
+ * Вилка ложится в отдельную таблицу — у неё своя политика доступа. Деньги
+ * видят не все, кто видит вакансию, и это разделение проходит по таблицам,
+ * а не по колонкам: RLS умеет прятать строки, а не поля.
+ */
+export async function createVacancy(input: VacancyInput): Promise<string> {
+  if (isDemoMode) {
+    throw new Error("В демо-режиме вакансия не заводится: встроенный набор только для показа.");
+  }
+
+  const pipelineId = await getDefaultPipelineId();
+  const userId = (await db().auth.getUser()).data.user?.id ?? null;
+
+  const { data, error } = await db()
+    .from("vacancies")
+    .insert({
+      title: input.title.trim(),
+      department_id: input.department_id,
+      pipeline_id: pipelineId,
+      specialization: input.specialization.trim() || null,
+      city: input.city.trim() || null,
+      employment_type: input.employment_type,
+      work_format: input.work_format,
+      grade: input.grade,
+      headcount: input.headcount,
+      weekly_hours: input.weekly_hours,
+      description: input.description.trim() || null,
+      requirements: input.requirements.trim() || null,
+      conditions: input.conditions.trim() || null,
+      first_month_reality: input.first_month_reality.trim() || null,
+      status: "published",
+      opened_at: new Date().toISOString(),
+      recruiter_id: userId,
+      created_by: userId,
+    })
+    .select("id")
+    .single();
+
+  if (error) throw error;
+
+  if (input.salary_min !== null || input.salary_max !== null) {
+    const { error: compErr } = await db().from("vacancy_compensation").insert({
+      vacancy_id: data.id,
+      salary_min: input.salary_min,
+      salary_max: input.salary_max,
+      is_net: input.is_net,
+    });
+    // Вилку записать не вышло — сама вакансия уже есть и работает.
+    // Ронять создание из-за этого неправильно, но и молчать нельзя.
+    if (compErr) console.warn("Вилка не записалась:", compErr.message);
+  }
+
+  return data.id as string;
 }
 
 export async function listDepartments() {

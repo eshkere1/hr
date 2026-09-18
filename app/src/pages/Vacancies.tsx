@@ -1,21 +1,23 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { Sparkles } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { Plus, Sparkles } from "lucide-react";
 import * as api from "@/lib/api";
 import { PublishBlock } from "@/pages/HeadHunter";
 import { useAsync } from "@/hooks/useAsync";
 import { useAuth } from "@/hooks/useAuth";
-import { Button, Textarea } from "@/components/ui";
+import { Button, Field, Input, Modal, Select, Textarea } from "@/components/ui";
 import {
   Card, Skeleton, Table, TableWrap, Tabs, Tag, Td, Th,
 } from "@/components/ui";
 import { EmptyState, PageHeader, StageChip } from "@/components/app/primitives";
 import { Funnel } from "./Dashboard";
 import {
-  GRADE_LABEL, PRIORITY_LABEL, VACANCY_STATUS_LABEL,
-  type VacancyPriority, type VacancyStatus,
+  EMPLOYMENT_LABEL, GRADE_LABEL, PRIORITY_LABEL, VACANCY_STATUS_LABEL, WORK_FORMAT_LABEL,
+  type EmploymentType, type GradeLevel, type VacancyInput,
+  type VacancyPriority, type VacancyStatus, type WorkFormat,
 } from "@/lib/types";
 import { daysSince, daysWord, dateRu, money } from "@/lib/utils";
+import { isDemoMode } from "@/lib/supabase";
 
 const PRIORITY_TONE: Record<VacancyPriority, "crit" | "warn" | "info" | "mute"> = {
   critical: "crit", high: "warn", normal: "info", low: "mute",
@@ -34,6 +36,8 @@ export default function Vacancies() {
   const vacancies = useAsync(() => api.listVacancies(), []);
   const applications = useAsync(() => api.listApplications(), []);
   const [filter, setFilter] = useState("open");
+  const [creating, setCreating] = useState(false);
+  const navigate = useNavigate();
 
   const all = vacancies.data ?? [];
   const list = all.filter((v) =>
@@ -53,6 +57,23 @@ export default function Vacancies() {
         eyebrow="Подбор"
         title={can("dept_head", "line_manager") ? "Мои вакансии" : "Вакансии"}
         description="Сколько дней открыта, сколько людей в работе и кто за неё отвечает."
+        actions={
+          can("hr_manager", "superuser") ? (
+            <Button onClick={() => setCreating(true)} disabled={isDemoMode}>
+              <Plus className="h-4 w-4" /> Открыть вакансию
+            </Button>
+          ) : undefined
+        }
+      />
+
+      <NewVacancyModal
+        open={creating}
+        onClose={() => setCreating(false)}
+        onCreated={(id) => {
+          setCreating(false);
+          vacancies.reload();
+          navigate(`/vacancies/${id}`);
+        }}
       />
 
       <div className="mb-5">
@@ -72,7 +93,11 @@ export default function Vacancies() {
       ) : list.length === 0 ? (
         <EmptyState
           title="Вакансий в этом разделе нет"
-          description="Здесь появятся вакансии, как только их согласуют и опубликуют."
+          description={
+            can("hr_manager", "superuser")
+              ? "Нажмите «Открыть вакансию» — и подбор начнётся с неё: отклики, воронка, сроки ответа и публикация на hh считаются от вакансии."
+              : "Здесь появятся вакансии, как только их согласуют и опубликуют."
+          }
         />
       ) : (
         <TableWrap>
@@ -529,5 +554,247 @@ function QuestionsTab({ vacancyId }: { vacancyId: string }) {
         </Card>
       ))}
     </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Новая вакансия
+//
+// Раньше вакансии брались только из встроенного набора: завести свою было
+// нечем, и после первой же уборки демо-данных подбор начинать было не с чего.
+//
+// Поля разделены на обязательные и остальные не по важности, а по тому, без
+// чего вакансия не работает. Город и направление обязательны потому, что hh
+// хранит регион и профессиональную роль числами и подбирает их по этим двум
+// словам: без них публикация остановится с ошибкой.
+// ---------------------------------------------------------------------------
+const EMPTY: VacancyInput = {
+  title: "",
+  department_id: "",
+  specialization: "",
+  city: "",
+  employment_type: "full_time",
+  work_format: "onsite",
+  grade: null,
+  headcount: 1,
+  weekly_hours: null,
+  description: "",
+  requirements: "",
+  conditions: "",
+  first_month_reality: "",
+  salary_min: null,
+  salary_max: null,
+  is_net: true,
+};
+
+function NewVacancyModal({
+  open, onClose, onCreated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const departments = useAsync(() => api.listDepartments(), []);
+  const [form, setForm] = useState<VacancyInput>(EMPTY);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const set = <K extends keyof VacancyInput>(key: K, value: VacancyInput[K]) =>
+    setForm((f) => ({ ...f, [key]: value }));
+
+  const ready = form.title.trim() && form.department_id && form.specialization.trim() && form.city.trim();
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const id = await api.createVacancy(form);
+      setForm(EMPTY);
+      onCreated(id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не получилось создать вакансию");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Открыть вакансию" wide>
+      <div className="flex flex-col gap-3">
+        {error && (
+          <p className="m-0 rounded-md border border-crit-soft bg-crit-soft px-[10px] py-2 text-[12.5px] text-crit">
+            {error}
+          </p>
+        )}
+
+        <Field label="Название должности">
+          <Input
+            value={form.title}
+            onChange={(e) => set("title", e.target.value)}
+            placeholder="Менеджер по продажам"
+          />
+        </Field>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Подразделение">
+            <Select value={form.department_id} onChange={(e) => set("department_id", e.target.value)}>
+              <option value="">Выберите</option>
+              {(departments.data ?? []).map((d: { id: string; name: string }) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field
+            label="Направление"
+            hint="Так это называется на языке площадок: «Продажи», «Разработка», «Бухгалтерия»"
+          >
+            <Input
+              value={form.specialization}
+              onChange={(e) => set("specialization", e.target.value)}
+              placeholder="Продажи"
+            />
+          </Field>
+
+          <Field label="Город" hint="Как на hh: «Москва», «Санкт-Петербург»">
+            <Input
+              value={form.city}
+              onChange={(e) => set("city", e.target.value)}
+              placeholder="Москва"
+            />
+          </Field>
+
+          <Field label="Сколько человек нужно">
+            <Input
+              type="number"
+              min={1}
+              value={String(form.headcount)}
+              onChange={(e) => set("headcount", Math.max(1, Number(e.target.value) || 1))}
+            />
+          </Field>
+
+          <Field label="Занятость">
+            <Select
+              value={form.employment_type}
+              onChange={(e) => set("employment_type", e.target.value as EmploymentType)}
+            >
+              {Object.entries(EMPLOYMENT_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field label="Формат работы">
+            <Select
+              value={form.work_format}
+              onChange={(e) => set("work_format", e.target.value as WorkFormat)}
+            >
+              {Object.entries(WORK_FORMAT_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field label="Уровень">
+            <Select
+              value={form.grade ?? ""}
+              onChange={(e) => set("grade", (e.target.value || null) as GradeLevel | null)}
+            >
+              <option value="">не важен</option>
+              {Object.entries(GRADE_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field label="Часов в неделю" hint="Честная нагрузка, а не «по договорённости»">
+            <Input
+              type="number"
+              min={1}
+              value={form.weekly_hours === null ? "" : String(form.weekly_hours)}
+              onChange={(e) => set("weekly_hours", e.target.value ? Number(e.target.value) : null)}
+              placeholder="40"
+            />
+          </Field>
+
+          <Field label="Вилка от, ₽">
+            <Input
+              type="number"
+              value={form.salary_min === null ? "" : String(form.salary_min)}
+              onChange={(e) => set("salary_min", e.target.value ? Number(e.target.value) : null)}
+              placeholder="80000"
+            />
+          </Field>
+
+          <Field label="Вилка до, ₽">
+            <Input
+              type="number"
+              value={form.salary_max === null ? "" : String(form.salary_max)}
+              onChange={(e) => set("salary_max", e.target.value ? Number(e.target.value) : null)}
+              placeholder="120000"
+            />
+          </Field>
+        </div>
+
+        <label className="flex items-center gap-2 text-[13px] text-ink-2">
+          <input
+            type="checkbox"
+            checked={form.is_net}
+            onChange={(e) => set("is_net", e.target.checked)}
+          />
+          Вилка указана на руки (снимите галочку, если до вычета налога)
+        </label>
+
+        <Field label="Чем предстоит заниматься">
+          <Textarea
+            rows={3}
+            value={form.description}
+            onChange={(e) => set("description", e.target.value)}
+          />
+        </Field>
+
+        <Field label="Что обязательно нужно уметь">
+          <Textarea
+            rows={3}
+            value={form.requirements}
+            onChange={(e) => set("requirements", e.target.value)}
+          />
+        </Field>
+
+        <Field label="Условия">
+          <Textarea
+            rows={2}
+            value={form.conditions}
+            onChange={(e) => set("conditions", e.target.value)}
+          />
+        </Field>
+
+        <Field
+          label="Что реально будет в первый месяц"
+          hint="Самое полезное поле объявления: отсеивает не тех до отклика, а не после собеседования. Уходит на hh вместе с описанием."
+        >
+          <Textarea
+            rows={3}
+            value={form.first_month_reality}
+            onChange={(e) => set("first_month_reality", e.target.value)}
+            placeholder="Первые две недели — обучение продукту и слушаем звонки старших. С третьей — свои звонки под присмотром."
+          />
+        </Field>
+
+        <div className="mt-1 flex flex-wrap justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Отмена</Button>
+          <Button onClick={submit} disabled={!ready || busy}>
+            {busy ? "Открываю…" : "Открыть вакансию"}
+          </Button>
+        </div>
+
+        {!ready && (
+          <p className="m-0 text-right text-[12px] text-ink-3">
+            Нужны название, подразделение, направление и город.
+          </p>
+        )}
+      </div>
+    </Modal>
   );
 }

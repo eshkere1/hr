@@ -477,6 +477,42 @@ export interface InterviewSlot {
   booked_by_application_id: string | null;
 }
 
+export type EmploymentType = "full_time" | "part_time" | "hourly" | "project" | "contract";
+
+export const EMPLOYMENT_LABEL: Record<EmploymentType, string> = {
+  full_time: "полная занятость",
+  part_time: "частичная занятость",
+  hourly: "почасовая",
+  project: "проектная работа",
+  contract: "договор подряда",
+};
+
+/**
+ * Что нужно знать, чтобы открыть вакансию.
+ *
+ * Город и направление помечены обязательными не из вредности: без них
+ * вакансию нельзя опубликовать на hh — он хранит регион и профессиональную
+ * роль числами и подбирает их по этим двум полям.
+ */
+export interface VacancyInput {
+  title: string;
+  department_id: string;
+  specialization: string;
+  city: string;
+  employment_type: EmploymentType;
+  work_format: WorkFormat;
+  grade: GradeLevel | null;
+  headcount: number;
+  weekly_hours: number | null;
+  description: string;
+  requirements: string;
+  conditions: string;
+  first_month_reality: string;
+  salary_min: number | null;
+  salary_max: number | null;
+  is_net: boolean;
+}
+
 export type WorkFormat = "onsite" | "remote" | "hybrid";
 
 /** Уровень позиции. Заменяет отраслевые «ступени»: подходит любой роли. */
