@@ -11,7 +11,7 @@ import {
 import { Kpi, PageHeader } from "@/components/app/primitives";
 import { Funnel } from "./Dashboard";
 import { REFERRAL_STATUS_LABEL, ROLE_LABEL, type AppRole } from "@/lib/types";
-import { daysSince, daysWord, money } from "@/lib/utils";
+import { dateRu, daysSince, daysWord, money } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Аналитика
@@ -339,6 +339,12 @@ export function Admin() {
         description="Роль выдаёт только суперпользователь. Она хранится в отдельной таблице и никогда не приходит с клиента."
       />
 
+      <Accounts />
+
+      <h2 className="mb-3 mt-8 font-display text-[20px] font-semibold tracking-[-0.01em]">
+        Что даёт каждая роль
+      </h2>
+
       <Card className="mb-5 flex items-start gap-3 border-l-[3px] border-l-primary">
         <ShieldCheck className="mt-[2px] h-5 w-5 shrink-0 text-primary" />
         <p className="m-0 text-[13.5px] text-ink-2">
@@ -532,6 +538,156 @@ function RejectionReasons() {
           );
         })}
       </Card>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Учётные записи. Сотрудник регистрируется сам и получает роль «кандидат» —
+// самую безопасную. Здесь суперпользователь выдаёт ему настоящую.
+// ---------------------------------------------------------------------------
+const STAFF_ROLES: AppRole[] = ["hr_manager", "director", "dept_head", "line_manager", "employee", "superuser"];
+
+function Accounts() {
+  const accounts = useAsync(() => api.listAccounts(), []);
+  const [picked, setPicked] = useState<Record<string, AppRole | "">>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(key: string, fn: () => Promise<unknown>) {
+    setBusy(key);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не получилось");
+    } finally {
+      setBusy(null);
+      accounts.reload();
+    }
+  }
+
+  /** Выдать рабочую роль и снять «кандидата»: сотрудник не соискатель. */
+  async function makeStaff(userId: string, role: AppRole, current: AppRole[]) {
+    await api.grantRole(userId, role);
+    if (current.includes("candidate")) await api.revokeRole(userId, "candidate");
+  }
+
+  if (accounts.loading) return <Skeleton className="h-40 w-full" />;
+  const list = accounts.data ?? [];
+
+  return (
+    <section>
+      <h2 className="mb-1 font-display text-[20px] font-semibold tracking-[-0.01em]">
+        Учётные записи
+      </h2>
+      <p className="mb-4 max-w-[70ch] text-[13.5px] text-ink-2">
+        Сотрудник регистрируется сам по ссылке на систему — и ничего не видит,
+        пока вы не выдадите ему роль. Так задумано: иначе любой, кто нашёл
+        адрес, увидел бы базу.
+      </p>
+
+      {error && (
+        <p className="mb-3 rounded-md border border-crit-soft bg-crit-soft px-[10px] py-2 text-[12.5px] text-crit">
+          {error}
+        </p>
+      )}
+
+      {list.length === 0 ? (
+        <Card>
+          <p className="m-0 text-[13.5px] text-ink-2">Учётных записей пока нет.</p>
+        </Card>
+      ) : (
+        <TableWrap>
+          <Table className="min-w-[860px]">
+            <thead>
+              <tr>
+                <Th>Человек</Th>
+                <Th>Почта</Th>
+                <Th>Роли</Th>
+                <Th>Выдать роль</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((a) => (
+                <tr key={a.id} className="hover:bg-surface-2">
+                  <Td>
+                    <div className="font-medium">{a.full_name}</div>
+                    <div className="text-[11.5px] text-ink-3">
+                      {a.last_sign_in ? `входил ${dateRu(a.last_sign_in)}` : "ещё не входил"}
+                    </div>
+                  </Td>
+                  <Td>
+                    <div className="text-[13px]">{a.email}</div>
+                    {a.confirmed ? (
+                      <Tag tone="good">почта подтверждена</Tag>
+                    ) : (
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <Tag tone="warn">письмо не подтверждено</Tag>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy === a.id}
+                          onClick={() => run(a.id, () => api.confirmAccount(a.id))}
+                        >
+                          Подтвердить вручную
+                        </Button>
+                      </div>
+                    )}
+                  </Td>
+                  <Td>
+                    <div className="flex flex-wrap gap-1">
+                      {a.roles.length === 0 && <span className="text-ink-3">—</span>}
+                      {a.roles.map((r) => (
+                        <span key={r} className="inline-flex items-center gap-1">
+                          <Tag tone={r === "candidate" ? "mute" : "info"}>{ROLE_LABEL[r]}</Tag>
+                          <button
+                            type="button"
+                            title="Снять роль"
+                            className="text-ink-3 hover:text-crit"
+                            disabled={busy === a.id}
+                            onClick={() => {
+                              if (confirm(`Снять роль «${ROLE_LABEL[r]}» у ${a.full_name}?`)) {
+                                void run(a.id, () => api.revokeRole(a.id, r));
+                              }
+                            }}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </Td>
+                  <Td>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={picked[a.id] ?? ""}
+                        onChange={(e) => setPicked((p) => ({ ...p, [a.id]: e.target.value as AppRole }))}
+                      >
+                        <option value="">Выберите</option>
+                        {STAFF_ROLES.filter((r) => !a.roles.includes(r)).map((r) => (
+                          <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+                        ))}
+                      </Select>
+                      <Button
+                        size="sm"
+                        disabled={!picked[a.id] || busy === a.id}
+                        onClick={() => {
+                          const role = picked[a.id] as AppRole;
+                          void run(a.id, () => makeStaff(a.id, role, a.roles));
+                          setPicked((p) => ({ ...p, [a.id]: "" }));
+                        }}
+                      >
+                        Выдать
+                      </Button>
+                    </div>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </TableWrap>
+      )}
     </section>
   );
 }

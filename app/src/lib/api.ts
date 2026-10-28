@@ -2440,3 +2440,47 @@ export async function purgeQueuedFiles(): Promise<{ убрано: number; ост
   if (error) throw error;
   return data;
 }
+
+// ===========================================================================
+// УЧЁТНЫЕ ЗАПИСИ И РОЛИ
+//
+// Роль меняется обычной вставкой и удалением в user_roles: политика пускает
+// туда только суперпользователя, так что проверка живёт в базе, а не здесь.
+// Список и подтверждение почты — через функции, потому что auth.users
+// наружу не открыта.
+// ===========================================================================
+
+export interface Account {
+  id: string;
+  email: string;
+  full_name: string;
+  roles: AppRole[];
+  confirmed: boolean;
+  created_at: string;
+  last_sign_in: string | null;
+}
+
+export async function listAccounts(): Promise<Account[]> {
+  if (isDemoMode) return [];
+  const { data, error } = await db().rpc("admin_list_accounts");
+  if (error) throw error;
+  return (data ?? []) as Account[];
+}
+
+export async function grantRole(userId: string, role: AppRole) {
+  if (isDemoMode) throw new Error("В демо-режиме роли не выдаются.");
+  const { error } = await db().from("user_roles").insert({ user_id: userId, role });
+  if (error && error.code !== "23505") throw error;
+}
+
+export async function revokeRole(userId: string, role: AppRole) {
+  if (isDemoMode) throw new Error("В демо-режиме роли не снимаются.");
+  const { error } = await db().from("user_roles").delete().eq("user_id", userId).eq("role", role);
+  if (error) throw error;
+}
+
+export async function confirmAccount(userId: string) {
+  if (isDemoMode) throw new Error("В демо-режиме подтверждать некого.");
+  const { error } = await db().rpc("admin_confirm_account", { _user_id: userId });
+  if (error) throw error;
+}
