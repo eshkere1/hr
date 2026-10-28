@@ -83,6 +83,10 @@ Deno.serve(async (req) => {
       return json({
         ...synced,
         готово: imported.done && left === 0,
+        проблемы: [
+          ...(((synced as any).проблемы ?? []) as string[]),
+          ...(managersProblem ? [managersProblem] : []),
+        ],
         вакансий_перенесено: imported.created,
         из_них_архивных: imported.archived,
         вакансий_уже_было: imported.skipped,
@@ -377,6 +381,8 @@ async function defaultPipelineId(): Promise<string> {
   return data.id;
 }
 
+let managersProblem: string | null = null;
+
 async function importVacancies(
   deadline: number,
 ): Promise<{ created: number; archived: number; skipped: number; done: boolean }> {
@@ -394,14 +400,35 @@ async function importVacancies(
   let archived = 0;
   let skipped = 0;
 
+  // hh отдаёт список вакансий по менеджеру: без manager_id — только вакансии
+  // того, под кем подключились. Первый перенос так и взял одну активную из
+  // нескольких. Поэтому сначала все менеджеры компании, потом вакансии
+  // каждого. Если смотреть чужих менеджеров аккаунту не разрешено — берём
+  // свои и честно говорим об этом.
+  const managers: (string | null)[] = [];
+  for (let page = 0; page < 10; page++) {
+    const m = await hh(token, `/employers/${acc.employer_id}/managers?page=${page}&per_page=100`);
+    if (!m.ok) break;
+    for (const it of m.body?.items ?? []) managers.push(String(it.id));
+    if (page + 1 >= (m.body?.pages ?? 1)) break;
+  }
+  if (managers.length === 0) {
+    managers.push(null);
+    managersProblem =
+      "hh не дал список менеджеров компании — перенесены только вакансии того, под кем подключились. " +
+      "Чтобы забрать все, подключите hh учётной записью администратора компании на hh.";
+  }
+
   for (const kind of ["active", "archived"] as const) {
   const isArchive = kind === "archived";
+  for (const managerId of managers) {
   for (let page = 0; page < 20; page++) {
-    const res = await hh(token, `/employers/${acc.employer_id}/vacancies/${kind}?page=${page}&per_page=50`);
+    const byManager = managerId ? `&manager_id=${managerId}` : "";
+    const res = await hh(token, `/employers/${acc.employer_id}/vacancies/${kind}?page=${page}&per_page=50${byManager}`);
     if (!res.ok) {
       // Активные обязательны, архив — нет: если hh архив не отдал, перенесём
       // хотя бы живое и скажем об этом.
-      if (isArchive) { console.error("архив hh не отдался", res.status); break; }
+      if (isArchive || managerId) { console.error("список hh не отдался", kind, managerId, res.status); break; }
       throw new Error(`hh не отдал список вакансий (${res.status}): ${JSON.stringify(res.body?.errors ?? res.body ?? "")}`);
     }
 
@@ -469,6 +496,7 @@ async function importVacancies(
     }
 
     if (page + 1 >= (res.body?.pages ?? 1)) break;
+  }
   }
   }
 
