@@ -42,10 +42,17 @@ Deno.serve(async (req) => {
   const userId = userData.user?.id;
   if (!userId) return json({ error: "не авторизован" }, 401);
 
-  // Публикует HR: это его работа, а не суперпользователя.
-  const { data: isHr } = await admin.rpc("has_role", { _user_id: userId, _role: "hr_manager" });
-  const { data: isSu } = await admin.rpc("has_role", { _user_id: userId, _role: "superuser" });
-  if (!isHr && !isSu) return json({ error: "публиковать вакансии может HR" }, 403);
+  // Публикуют HR и руководитель компании. Подключать работодателя — по-прежнему
+  // только суперпользователь: это доступ к аккаунту компании на hh, а не работа
+  // с конкретной вакансией.
+  const roles = await Promise.all(
+    ["hr_manager", "director", "superuser"].map((r) =>
+      admin.rpc("has_role", { _user_id: userId, _role: r }).then((x) => Boolean(x.data))
+    ),
+  );
+  if (!roles.some(Boolean)) {
+    return json({ error: "публиковать вакансии могут HR-менеджер и руководитель" }, 403);
+  }
 
   let payload: { action?: string; vacancy_id?: string; billing_type?: string };
   try {

@@ -50,9 +50,13 @@ Deno.serve(async (req) => {
     const { data: userData } = await admin.auth.getUser(auth.replace("Bearer ", ""));
     const userId = userData.user?.id;
     if (!userId) return json({ error: "не авторизован" }, 401);
-    const { data: isHr } = await admin.rpc("has_role", { _user_id: userId, _role: "hr_manager" });
-    const { data: isSu } = await admin.rpc("has_role", { _user_id: userId, _role: "superuser" });
-    if (!isHr && !isSu) return json({ error: "нужны права HR" }, 403);
+    // Забирать отклики может тот же круг, что и публиковать: HR и руководитель.
+    const roles = await Promise.all(
+      ["hr_manager", "director", "superuser"].map((r) =>
+        admin.rpc("has_role", { _user_id: userId, _role: r }).then((x) => Boolean(x.data))
+      ),
+    );
+    if (!roles.some(Boolean)) return json({ error: "нужны права HR-менеджера или руководителя" }, 403);
   }
 
   try {
