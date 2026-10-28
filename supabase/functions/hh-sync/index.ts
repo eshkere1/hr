@@ -196,7 +196,7 @@ async function sync(
         seen += items.length;
 
         for (const item of items) {
-          const ok = await importNegotiation(item, pub.vacancy_id, statusFor(folder, Boolean(pub.archived_at)));
+          const ok = await importNegotiation(item, pub.vacancy_id, statusFor(folder, Boolean(pub.archived_at)), String(pub.external_id));
           if (ok) created += 1;
         }
 
@@ -242,6 +242,7 @@ async function importNegotiation(
   item: any,
   vacancyId: string,
   status: "active" | "on_hold" | "rejected" | "hired" = "active",
+  externalVacancyId: string | null = null,
 ): Promise<boolean> {
   const negotiationId = String(item.id);
 
@@ -317,6 +318,7 @@ async function importNegotiation(
     source: "hh",
     external_id: negotiationId,
     external_url: resume.alternate_url ?? null,
+    external_vacancy_id: externalVacancyId,
     applied_at: item.created_at ?? new Date().toISOString(),
     status,
     closed_at: status === "active" ? null : (item.updated_at ?? new Date().toISOString()),
