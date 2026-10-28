@@ -62,7 +62,7 @@ export default function HeadHunter() {
     setBusy(true);
     setNote(null);
     try {
-      const r = await api.importFromHh();
+      const r = await api.importFromHh((text) => setNote({ tone: "warn", text }));
       setNote({
         tone: r.проблемы?.length ? "warn" : "good",
         text:

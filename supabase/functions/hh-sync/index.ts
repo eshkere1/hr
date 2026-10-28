@@ -69,12 +69,20 @@ Deno.serve(async (req) => {
 
   try {
     if (action === "import") {
-      // Сначала вакансии, потом отклики: отклики привязываются к нашим
-      // вакансиям, и без первого шага второму не к чему их цеплять.
-      const imported = await importVacancies();
-      const synced = await sync({ allCollections: true, includeArchived: true });
+      // Перенос идёт порциями. Первая попытка сделать всё за один вызов
+      // упёрлась в потолок времени функции: 290 вакансий съели 150 секунд,
+      // и до откликов дело не дошло. Теперь функция работает ~110 секунд,
+      // запоминает, где остановилась, и отвечает «готово: нет» — интерфейс
+      // зовёт её снова, пока не закончит.
+      const deadline = Date.now() + 110_000;
+      const imported = await importVacancies(deadline);
+      const synced = imported.done
+        ? await sync({ allCollections: true, includeArchived: true, onlyUnsynced: true, deadline })
+        : { ok: true, новых: 0, просмотрено: 0, осталось: -1 };
+      const left = (synced as any).осталось ?? 0;
       return json({
         ...synced,
+        готово: imported.done && left === 0,
         вакансий_перенесено: imported.created,
         из_них_архивных: imported.archived,
         вакансий_уже_было: imported.skipped,
@@ -122,27 +130,35 @@ async function hh(token: string, path: string) {
   return { ok: res.ok, status: res.status, body };
 }
 
-async function sync(opts: { allCollections?: boolean; includeArchived?: boolean } = {}) {
+async function sync(
+  opts: { allCollections?: boolean; includeArchived?: boolean; onlyUnsynced?: boolean; deadline?: number } = {},
+) {
   const { token, accountId } = await getToken();
 
   let pubsQuery = admin
     .from("vacancy_publications")
-    .select("vacancy_id, external_id, archived_at")
-    .eq("board", "hh");
+    .select("id, vacancy_id, external_id, archived_at")
+    .eq("board", "hh")
+    .order("archived_at", { ascending: true, nullsFirst: true });
+  // При переносе берём только ещё не разобранные: так прерванный перенос
+  // продолжается с того места, где остановился, а не начинается заново.
+  if (opts.onlyUnsynced) pubsQuery = pubsQuery.is("last_sync_at", null);
   // Обычная синхронизация ходит только по живым вакансиям. Перенос архива —
   // и по закрытым: их отклики и есть та история, ради которой архив нужен.
   if (!opts.includeArchived) pubsQuery = pubsQuery.is("archived_at", null);
   const { data: pubs } = await pubsQuery;
 
   if (!pubs || pubs.length === 0) {
-    return { ok: true, новых: 0, сообщение: "На hh нет наших активных вакансий." };
+    return { ok: true, новых: 0, просмотрено: 0, осталось: 0, сообщение: "На hh нет наших активных вакансий." };
   }
 
   let created = 0;
   let seen = 0;
   const проблемы: string[] = [];
 
+  let processed = 0;
   for (const pub of pubs) {
+    if (opts.deadline && Date.now() > opts.deadline) break;
     // Обычная синхронизация смотрит только папку «Отклики» — новые люди
     // приходят туда. При переносе смотрим все папки, включая отказы: тех,
     // кого на hh успели пригласить, отложить или отклонить, тоже надо
@@ -183,6 +199,11 @@ async function sync(opts: { allCollections?: boolean; includeArchived?: boolean 
         if (page + 1 >= (res.body?.pages ?? 1)) break;
       }
     }
+
+    await admin.from("vacancy_publications")
+      .update({ last_sync_at: new Date().toISOString() })
+      .eq("id", pub.id);
+    processed += 1;
   }
 
   await admin.from("hh_accounts").update({
@@ -194,6 +215,7 @@ async function sync(opts: { allCollections?: boolean; includeArchived?: boolean 
     ok: true,
     новых: created,
     просмотрено: seen,
+    осталось: pubs.length - processed,
     проблемы: проблемы.length ? проблемы : undefined,
   };
 }
@@ -355,7 +377,9 @@ async function defaultPipelineId(): Promise<string> {
   return data.id;
 }
 
-async function importVacancies(): Promise<{ created: number; archived: number; skipped: number }> {
+async function importVacancies(
+  deadline: number,
+): Promise<{ created: number; archived: number; skipped: number; done: boolean }> {
   const { token } = await getToken();
 
   const { data: acc } = await admin
@@ -382,6 +406,7 @@ async function importVacancies(): Promise<{ created: number; archived: number; s
     }
 
     for (const short of res.body?.items ?? []) {
+      if (Date.now() > deadline) return { created, archived, skipped, done: false };
       const externalId = String(short.id);
 
       const { data: linked } = await admin
@@ -447,5 +472,5 @@ async function importVacancies(): Promise<{ created: number; archived: number; s
   }
   }
 
-  return { created, archived, skipped };
+  return { created, archived, skipped, done: true };
 }
