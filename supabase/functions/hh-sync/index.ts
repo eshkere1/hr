@@ -441,37 +441,6 @@ async function importVacancies(
         .eq("board", "hh").eq("external_id", externalId).maybeSingle();
       if (linked) { skipped += 1; continue; }
 
-      // Та же должность в том же городе уже есть — это её очередное
-      // размещение, а не новая вакансия. Компании годами переразмещают
-      // «Продавца в Москве», и первый перенос превратил каждое размещение
-      // в отдельную вакансию: 437 вместо 199. Привязываем к существующей.
-      const { data: same } = await admin
-        .from("vacancies")
-        .select("id, status")
-        .ilike("title", String(short.name ?? "").trim())
-        .ilike("city", String(short.area?.name ?? ""))
-        .limit(1)
-        .maybeSingle();
-
-      if (same) {
-        await admin.from("vacancy_publications").insert({
-          vacancy_id: same.id,
-          board: "hh",
-          external_id: externalId,
-          external_url: short.alternate_url ?? null,
-          published_at: short.published_at ?? new Date().toISOString(),
-          archived_at: isArchive ? (short.archived_at ?? new Date().toISOString()) : null,
-        });
-        // Живое размещение открывает и вакансию, даже если раньше она закрывалась.
-        if (!isArchive && same.status !== "published") {
-          await admin.from("vacancies")
-            .update({ status: "published", closed_at: null, close_reason: null })
-            .eq("id", same.id);
-        }
-        skipped += 1;
-        continue;
-      }
-
       const full = await hh(token, `/vacancies/${externalId}`);
       const v = full.ok ? full.body : short;
 
