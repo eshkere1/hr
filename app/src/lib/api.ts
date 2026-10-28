@@ -2494,3 +2494,13 @@ export async function confirmAccount(userId: string) {
   const { error } = await db().rpc("admin_confirm_account", { _user_id: userId });
   if (error) throw error;
 }
+
+/**
+ * Перенести вакансии, размещённые на hh вручную, и все отклики по ним.
+ * Повторный запуск безопасен: уже перенесённое пропускается.
+ */
+export async function importFromHh(): Promise<{
+  вакансий_перенесено: number; из_них_архивных: number; вакансий_уже_было: number; новых: number; просмотрено: number; проблемы?: string[];
+}> {
+  return callHh("hh-sync", { action: "import" });
+}

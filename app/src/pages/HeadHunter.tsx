@@ -58,6 +58,28 @@ export default function HeadHunter() {
     }
   }
 
+  async function importAll() {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api.importFromHh();
+      setNote({
+        tone: r.проблемы?.length ? "warn" : "good",
+        text:
+          `Вакансий перенесено: ${r.вакансий_перенесено}` +
+          (r.из_них_архивных ? `, из них архивных: ${r.из_них_архивных}` : "") +
+          (r.вакансий_уже_было ? ` (ещё ${r.вакансий_уже_было} уже были)` : "") +
+          `. Откликов забрано: ${r.новых} из ${r.просмотрено}.` +
+          (r.проблемы?.length ? ` Проблемы: ${r.проблемы.join("; ")}` : ""),
+      });
+    } catch (e) {
+      setNote({ tone: "crit", text: e instanceof Error ? e.message : "Перенос не прошёл" });
+    } finally {
+      setBusy(false);
+      accounts.reload();
+    }
+  }
+
   async function disconnect(id: string, name: string) {
     if (!confirm(`Отключить «${name}»? Опубликованные вакансии на hh останутся, но обновлять их и забирать отклики система перестанет.`)) return;
     setBusy(true);
@@ -80,9 +102,14 @@ export default function HeadHunter() {
         description="Вакансии уходят на hh отсюда, отклики возвращаются в общую воронку. Заводить вакансию дважды и переносить людей руками больше не нужно."
         actions={
           list.length > 0 ? (
-            <Button onClick={sync} disabled={busy}>
-              <Download className="h-4 w-4" /> Забрать отклики
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={importAll} disabled={busy}>
+                Перенести вакансии и архив с hh
+              </Button>
+              <Button onClick={sync} disabled={busy}>
+                <Download className="h-4 w-4" /> Забрать отклики
+              </Button>
+            </div>
           ) : undefined
         }
       />

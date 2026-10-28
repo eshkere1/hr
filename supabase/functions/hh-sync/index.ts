@@ -59,7 +59,27 @@ Deno.serve(async (req) => {
     if (!roles.some(Boolean)) return json({ error: "нужны права HR-менеджера или руководителя" }, 403);
   }
 
+  let action = "sync";
   try {
+    const body = await req.json();
+    if (body?.action) action = String(body.action);
+  } catch {
+    /* тело пустое — обычная синхронизация */
+  }
+
+  try {
+    if (action === "import") {
+      // Сначала вакансии, потом отклики: отклики привязываются к нашим
+      // вакансиям, и без первого шага второму не к чему их цеплять.
+      const imported = await importVacancies();
+      const synced = await sync({ allCollections: true, includeArchived: true });
+      return json({
+        ...synced,
+        вакансий_перенесено: imported.created,
+        из_них_архивных: imported.archived,
+        вакансий_уже_было: imported.skipped,
+      });
+    }
     return json(await sync());
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -102,14 +122,17 @@ async function hh(token: string, path: string) {
   return { ok: res.ok, status: res.status, body };
 }
 
-async function sync() {
+async function sync(opts: { allCollections?: boolean; includeArchived?: boolean } = {}) {
   const { token, accountId } = await getToken();
 
-  const { data: pubs } = await admin
+  let pubsQuery = admin
     .from("vacancy_publications")
-    .select("vacancy_id, external_id")
-    .eq("board", "hh")
-    .is("archived_at", null);
+    .select("vacancy_id, external_id, archived_at")
+    .eq("board", "hh");
+  // Обычная синхронизация ходит только по живым вакансиям. Перенос архива —
+  // и по закрытым: их отклики и есть та история, ради которой архив нужен.
+  if (!opts.includeArchived) pubsQuery = pubsQuery.is("archived_at", null);
+  const { data: pubs } = await pubsQuery;
 
   if (!pubs || pubs.length === 0) {
     return { ok: true, новых: 0, сообщение: "На hh нет наших активных вакансий." };
@@ -120,28 +143,45 @@ async function sync() {
   const проблемы: string[] = [];
 
   for (const pub of pubs) {
-    // Отклики по конкретной вакансии. Постранично: у популярной вакансии
-    // их сотни, а hh отдаёт по 50.
-    for (let page = 0; page < 20; page++) {
-      const res = await hh(
-        token,
-        `/negotiations/response?vacancy_id=${pub.external_id}&page=${page}&per_page=50`,
-      );
+    // Обычная синхронизация смотрит только папку «Отклики» — новые люди
+    // приходят туда. При переносе смотрим все папки, включая отказы: тех,
+    // кого на hh успели пригласить, отложить или отклонить, тоже надо
+    // забрать. Отказы нужны архиву — «уже приходил, не подошёл потому-то»
+    // и есть то, что спасает от второго круга собеседований с тем же
+    // человеком.
+    let folders = ["response"];
+    if (opts.allCollections) {
+      const list = await hh(token, `/negotiations?vacancy_id=${pub.external_id}`);
+      const ids: string[] = [
+        ...(list.body?.collections ?? []),
+        ...(list.body?.generated_collections ?? []),
+      ].map((c: any) => String(c.id));
+      if (ids.length) folders = [...new Set(ids)];
+    }
 
-      if (!res.ok) {
-        проблемы.push(`вакансия ${pub.external_id}: hh ответил ${res.status}`);
-        break;
+    for (const folder of folders) {
+      // Постранично: у популярной вакансии откликов сотни, а hh отдаёт по 50.
+      for (let page = 0; page < 20; page++) {
+        const res = await hh(
+          token,
+          `/negotiations/${folder}?vacancy_id=${pub.external_id}&page=${page}&per_page=50`,
+        );
+
+        if (!res.ok) {
+          if (folder === "response") проблемы.push(`вакансия ${pub.external_id}: hh ответил ${res.status}`);
+          break;
+        }
+
+        const items = res.body?.items ?? [];
+        seen += items.length;
+
+        for (const item of items) {
+          const ok = await importNegotiation(item, pub.vacancy_id, statusFor(folder, Boolean(pub.archived_at)));
+          if (ok) created += 1;
+        }
+
+        if (page + 1 >= (res.body?.pages ?? 1)) break;
       }
-
-      const items = res.body?.items ?? [];
-      seen += items.length;
-
-      for (const item of items) {
-        const ok = await importNegotiation(item, pub.vacancy_id);
-        if (ok) created += 1;
-      }
-
-      if (page + 1 >= (res.body?.pages ?? 1)) break;
     }
   }
 
@@ -159,7 +199,24 @@ async function sync() {
 }
 
 /** Возвращает true, если завёлся новый отклик. */
-async function importNegotiation(item: any, vacancyId: string): Promise<boolean> {
+/**
+ * Во что превращается папка hh у нас.
+ *
+ * Отказ — отказ, нанят — нанят. Остальные на закрытой вакансии становятся
+ * «отложенными», а не «отказанными»: им не отказывали, вакансия просто
+ * закрылась. Разница важна, когда через полгода их найдёт «Подбор из базы».
+ */
+function statusFor(folder: string, vacancyClosed: boolean): "active" | "on_hold" | "rejected" | "hired" {
+  if (/discard/i.test(folder)) return "rejected";
+  if (folder === "hired") return "hired";
+  return vacancyClosed ? "on_hold" : "active";
+}
+
+async function importNegotiation(
+  item: any,
+  vacancyId: string,
+  status: "active" | "on_hold" | "rejected" | "hired" = "active",
+): Promise<boolean> {
   const negotiationId = String(item.id);
 
   // Уже забирали — второй раз не нужно.
@@ -235,6 +292,8 @@ async function importNegotiation(item: any, vacancyId: string): Promise<boolean>
     external_id: negotiationId,
     external_url: resume.alternate_url ?? null,
     applied_at: item.created_at ?? new Date().toISOString(),
+    status,
+    closed_at: status === "active" ? null : (item.updated_at ?? new Date().toISOString()),
     // stage_id, срок ответа и число критериев проставит триггер
     // prepare_new_application — тот же, что для откликов из Телеграма.
     stage_id: null as unknown as string,
@@ -249,4 +308,144 @@ async function importNegotiation(item: any, vacancyId: string): Promise<boolean>
   }
 
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Перенос вакансий, уже размещённых на hh вручную.
+//
+// Вакансия заводится у нас и связывается с той, что на hh, — без повторной
+// публикации и без траты платного размещения. Дальше отклики по ней идут
+// в общую воронку, как по вакансиям, опубликованным отсюда.
+// ---------------------------------------------------------------------------
+function stripHtml(html: string | null | undefined): string | null {
+  if (!html) return null;
+  return html
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|li|ul|ol|h\d)>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "— ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&laquo;/g, "«")
+    .replace(/&raquo;/g, "»")
+    .replace(/&amp;/g, "&")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function defaultDepartmentId(): Promise<string> {
+  // Подразделение у вакансии обязательно, а hh его не знает. Кладём в
+  // «Не распределено» — рекрутер перенесёт в нужное, когда откроет карточку.
+  const { data: found } = await admin
+    .from("departments").select("id").eq("code", "unassigned").maybeSingle();
+  if (found) return found.id;
+  const { data: created, error } = await admin
+    .from("departments")
+    .insert({ name: "Не распределено", code: "unassigned" })
+    .select("id").single();
+  if (error) throw new Error(`Не завелось подразделение для перенесённых вакансий: ${error.message}`);
+  return created.id;
+}
+
+async function defaultPipelineId(): Promise<string> {
+  const { data } = await admin
+    .from("pipelines").select("id").eq("is_default", true).eq("is_active", true)
+    .order("created_at").limit(1).maybeSingle();
+  if (!data) throw new Error("В базе нет воронки по умолчанию.");
+  return data.id;
+}
+
+async function importVacancies(): Promise<{ created: number; archived: number; skipped: number }> {
+  const { token } = await getToken();
+
+  const { data: acc } = await admin
+    .from("hh_accounts").select("employer_id")
+    .eq("is_active", true).order("created_at").limit(1).single();
+  if (!acc) throw new Error("Работодатель hh не подключён.");
+
+  const departmentId = await defaultDepartmentId();
+  const pipelineId = await defaultPipelineId();
+
+  let created = 0;
+  let archived = 0;
+  let skipped = 0;
+
+  for (const kind of ["active", "archived"] as const) {
+  const isArchive = kind === "archived";
+  for (let page = 0; page < 20; page++) {
+    const res = await hh(token, `/employers/${acc.employer_id}/vacancies/${kind}?page=${page}&per_page=50`);
+    if (!res.ok) {
+      // Активные обязательны, архив — нет: если hh архив не отдал, перенесём
+      // хотя бы живое и скажем об этом.
+      if (isArchive) { console.error("архив hh не отдался", res.status); break; }
+      throw new Error(`hh не отдал список вакансий (${res.status}): ${JSON.stringify(res.body?.errors ?? res.body ?? "")}`);
+    }
+
+    for (const short of res.body?.items ?? []) {
+      const externalId = String(short.id);
+
+      const { data: linked } = await admin
+        .from("vacancy_publications").select("id")
+        .eq("board", "hh").eq("external_id", externalId).maybeSingle();
+      if (linked) { skipped += 1; continue; }
+
+      const full = await hh(token, `/vacancies/${externalId}`);
+      const v = full.ok ? full.body : short;
+
+      const role = v.professional_roles?.[0];
+      const employment: Record<string, string> = {
+        full: "full_time", part: "part_time", project: "project", probation: "full_time", volunteer: "project",
+      };
+      const schedule = v.schedule?.id;
+
+      const { data: vac, error } = await admin.from("vacancies").insert({
+        title: v.name,
+        department_id: departmentId,
+        pipeline_id: pipelineId,
+        status: isArchive ? "closed" : "published",
+        opened_at: v.published_at ?? new Date().toISOString(),
+        closed_at: isArchive ? (v.archived_at ?? v.expires_at ?? new Date().toISOString()) : null,
+        close_reason: isArchive ? "Перенесена из архива hh" : null,
+        city: v.area?.name ?? null,
+        specialization: role?.name ?? null,
+        hh_area_id: v.area?.id ? String(v.area.id) : null,
+        hh_professional_role_id: role?.id ? String(role.id) : null,
+        employment_type: employment[v.employment?.id] ?? "full_time",
+        work_format: schedule === "remote" ? "remote" : "onsite",
+        description: stripHtml(v.description),
+      }).select("id").single();
+
+      if (error) {
+        console.error("не перенеслась вакансия", externalId, error.message);
+        continue;
+      }
+
+      if (v.salary && (v.salary.from || v.salary.to)) {
+        await admin.from("vacancy_compensation").insert({
+          vacancy_id: vac.id,
+          salary_min: v.salary.from ?? null,
+          salary_max: v.salary.to ?? null,
+          is_net: v.salary.gross === false,
+          currency: v.salary.currency === "RUR" ? "RUB" : (v.salary.currency ?? "RUB"),
+        });
+      }
+
+      await admin.from("vacancy_publications").insert({
+        vacancy_id: vac.id,
+        board: "hh",
+        external_id: externalId,
+        external_url: v.alternate_url ?? null,
+        published_at: v.published_at ?? new Date().toISOString(),
+        archived_at: isArchive ? (v.archived_at ?? v.expires_at ?? new Date().toISOString()) : null,
+      });
+
+      created += 1;
+      if (isArchive) archived += 1;
+    }
+
+    if (page + 1 >= (res.body?.pages ?? 1)) break;
+  }
+  }
+
+  return { created, archived, skipped };
 }
