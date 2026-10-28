@@ -2244,7 +2244,17 @@ export async function listHhAccounts(): Promise<HhAccount[]> {
 async function callHh(fn: string, body: Record<string, unknown>) {
   const { data, error } = await db().functions.invoke(fn, { body });
   if (error) {
-    const detail = (data as any)?.error ?? error.message;
+    // При ответе не 2xx библиотека кладёт тело не в data, а в error.context —
+    // и показывает своё «Edge Function returned a non-2xx status code».
+    // Наш текст ошибки там, достаём его.
+    let detail: string = error.message;
+    try {
+      const ctx = (error as any).context;
+      const parsed = ctx && typeof ctx.json === "function" ? await ctx.json() : null;
+      if (parsed?.error) detail = parsed.error;
+    } catch {
+      /* тело не JSON — оставляем сообщение библиотеки */
+    }
     throw new Error(detail);
   }
   if ((data as any)?.error) throw new Error((data as any).error);
